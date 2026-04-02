@@ -1,0 +1,40 @@
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: auction-service
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST:localhost}
+      port: ${SPRING_REDIS_PORT:6379}
+
+jwt:
+  secret: ${JWT_SECRET:dev-secret-change-in-production}
+
+aws:
+  endpoint-override: ${AWS_ENDPOINT_OVERRIDE:}
+  region: ${AWS_REGION:us-east-1}
+
+auction:
+  concurrency-strategy: ${CONCURRENCY_STRATEGY:pessimistic}
+  closer-interval-ms: 1000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        auction.lock.wait: true
+        auction.lock.hold: true
+
+# Redisson config — overridden by RedissonConfig bean
+redisson:
+  single-server-config:
+    address: "redis://${SPRING_REDIS_HOST:localhost}:${SPRING_REDIS_PORT:6379}"

@@ -1,0 +1,289 @@
+package com.dropbid.auction.service;
+
+import com.dropbid.auction.concurrency.BidResult;
+import com.dropbid.auction.concurrency.BidStrategy;
+import com.dropbid.auction.concurrency.StrategyManager;
+import com.dropbid.auction.events.AuctionEventPublisher;
+import com.dropbid.auction.model.Auction;
+import com.dropbid.auction.repository.AuctionRepository;
+import com.dropbid.shared.events.AuctionClosedEvent;
+import com.dropbid.shared.events.BidPlacedEvent;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+@Service
+public class AuctionService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuctionService.class);
+
+    private final AuctionRepository     repo;
+    private final StringRedisTemplate   redis;
+    private final RedissonClient        redisson;
+    private final AuctionEventPublisher publisher;
+    private final StrategyManager       strategyManager;
+
+    public AuctionService(AuctionRepository repo,
+                          StringRedisTemplate redis,
+                          RedissonClient redisson,
+                          AuctionEventPublisher publisher,
+                          StrategyManager strategyManager) {
+        this.repo            = repo;
+        this.redis           = redis;
+        this.redisson        = redisson;
+        this.publisher       = publisher;
+        this.strategyManager = strategyManager;
+    }
+
+    // ── CRUD ────────────────────────────────────────────────────────────────
+
+    public Auction createAuction(String sellerId, String shopId, String itemId,
+                                 long startingBid, Long maxPrice,
+                                 String startTime, String endTime, long quantity) {
+        if (maxPrice != null && maxPrice <= startingBid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "maxPrice must exceed startingBid");
+        }
+
+        Auction auction = new Auction();
+        auction.setAuctionId(UUID.randomUUID().toString());
+        auction.setItemId(itemId);
+        auction.setShopId(shopId);
+        auction.setSellerId(sellerId);
+        auction.setStartingBid(startingBid);
+        auction.setMaxPrice(maxPrice);
+        auction.setCurrentHighest(startingBid);
+        auction.setEndTime(endTime);
+        auction.setQuantity(quantity);
+        auction.setBidCount(0L);
+        auction.setVersion(0L);
+
+        Instant end = Instant.parse(endTime);
+        if (!end.isAfter(Instant.now())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "endTime must be in the future");
+        }
+
+        boolean scheduled = startTime != null && Instant.parse(startTime).isAfter(Instant.now());
+        if (scheduled && !end.isAfter(Instant.parse(startTime))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "endTime must be after startTime");
+        }
+
+        if (scheduled) {
+            auction.setStatus("PENDING");
+            auction.setStartTime(startTime);
+        } else {
+            auction.setStatus("OPEN");
+            auction.setStartTime(Instant.now().toString());
+            seedRedisCache(auction);
+        }
+
+        repo.save(auction);
+        log.info("created auction {} item={} status={}", auction.getAuctionId(), itemId, auction.getStatus());
+        return auction;
+    }
+
+    public Auction getAuction(String auctionId) {
+        return repo.findById(auctionId);
+    }
+
+    public List<Auction> listAuctions(String status) {
+        return repo.findByStatus(status != null ? status : "OPEN");
+    }
+
+    // ── Bidding ─────────────────────────────────────────────────────────────
+
+    /**
+     * Route a bid through the active concurrency strategy.
+     * On success: persist final state to DynamoDB + publish BidPlacedEvent.
+     */
+    public BidResult placeBid(String auctionId, long amount, String bidderId) {
+        ensureRedisCached(auctionId);
+
+        String sellerId = (String) redis.opsForHash().get("auction:" + auctionId, "seller_id");
+        if (bidderId.equals(sellerId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "seller cannot bid on their own auction");
+        }
+
+        BidStrategy strategy = strategyManager.current();
+        BidResult result;
+        try {
+            result = strategy.tryPlaceBid(auctionId, amount, bidderId);
+        } catch (BidStrategy.BidRejected e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (BidStrategy.ConcurrencyEx e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+        }
+
+        // Persist final state back to DynamoDB
+        Auction auctionMeta = repo.findById(auctionId);
+        auctionMeta.setCurrentHighest(result.newFloor());
+        auctionMeta.setHighestBidder(result.topBidder());
+        auctionMeta.setBidCount(result.bidCount());
+        auctionMeta.setVersion(result.newVersion());
+        auctionMeta.setWinners(result.currentWinners().isEmpty() ? null : result.currentWinners());
+        repo.update(auctionMeta);
+
+        // Publish event for Bid + Notification services
+        String bidId = UUID.randomUUID().toString();
+        publisher.publishBidPlaced(new BidPlacedEvent(
+                auctionId, bidId, auctionMeta.getItemId(), bidderId,
+                amount, result.previousHighest(), result.previousBidder(),
+                Instant.now().toString(), Instant.now().toString()
+        ));
+
+        return result;
+    }
+
+    // ── Opening ─────────────────────────────────────────────────────────────
+
+    /**
+     * Called by {@link com.dropbid.auction.scheduler.AuctionOpener} when a
+     * PENDING auction's startTime has arrived.
+     */
+    public void openAuction(String auctionId) {
+        Auction auction = repo.findByIdOrNull(auctionId);
+        if (auction == null || !"PENDING".equals(auction.getStatus())) return;
+
+        auction.setStatus("OPEN");
+        repo.update(auction);
+        seedRedisCache(auction);
+
+        log.info("opened auction {} item={}", auctionId, auction.getItemId());
+    }
+
+    /** Returns true if a PENDING auction's startTime is now in the past. */
+    public boolean isReadyToOpen(Auction auction) {
+        try {
+            return Instant.parse(auction.getStartTime()).isBefore(Instant.now());
+        } catch (DateTimeParseException e) {
+            return false;
+        }
+    }
+
+    // ── Closing ─────────────────────────────────────────────────────────────
+
+    /**
+     * Called by the {@link com.dropbid.auction.scheduler.AuctionCloser} when
+     * an auction's endTime has passed.
+     */
+    public void closeAuction(String auctionId) {
+        Auction auction = repo.findByIdOrNull(auctionId);
+        if (auction == null || !"OPEN".equals(auction.getStatus())) return;
+
+        // ── 1. Build winners map ────────────────────────────────────────────
+        String key        = "auction:" + auctionId;
+        String winnersKey = key + ":winners";
+        var winnerTuples  = redis.opsForZSet().rangeWithScores(winnersKey, 0, -1);
+
+        Map<String, Long> winners = new java.util.LinkedHashMap<>();
+        if (winnerTuples != null && !winnerTuples.isEmpty()) {
+            for (var t : winnerTuples) {
+                if (t.getValue() != null && t.getScore() != null) {
+                    winners.put(t.getValue(), t.getScore().longValue());
+                }
+            }
+        } else if (auction.getWinners() != null && !auction.getWinners().isEmpty()) {
+            log.warn("auction {} ZSET missing, falling back to DynamoDB winners", auctionId);
+            winners.putAll(auction.getWinners());
+        } else if (auction.getHighestBidder() != null && !auction.getHighestBidder().isBlank()) {
+            log.warn("auction {} winners missing, last resort DynamoDB highestBidder", auctionId);
+            winners.put(auction.getHighestBidder(), auction.getCurrentHighest());
+        }
+
+        // ── 2. Publish event BEFORE marking closed ──────────────────────────
+        // If publish fails, status stays OPEN and the scheduler retries next tick.
+        // If publish succeeds but the update below fails, downstream gets a
+        // duplicate event on retry — consumers must be idempotent (they are,
+        // via Redis Streams consumer-group ack).
+        if (!winners.isEmpty()) {
+            log.info("closed auction {} winners={}", auctionId, winners);
+            publisher.publishAuctionClosed(new AuctionClosedEvent(
+                    auctionId, winners, auction.getItemId(),
+                    auction.getShopId(), Instant.now().toString()
+            ));
+        } else {
+            log.info("closed auction {} with no bids", auctionId);
+        }
+
+        // ── 3. Mark CLOSED in DynamoDB and clean up Redis ───────────────────
+        auction.setStatus("CLOSED");
+        repo.update(auction);
+        redis.delete(key);
+        redis.delete(winnersKey);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /**
+     * Rebuilds the Redis hot-path cache from DynamoDB if the key was evicted
+     * or Redis was restarted. Called at the start of every placeBid().
+     *
+     * Uses a short-lived Redisson lock (lock:rebuild:{id}) so that under a
+     * cache-miss burst only one thread hits DynamoDB — the rest wait and then
+     * find the key already rebuilt.
+     */
+    private void ensureRedisCached(String auctionId) {
+        String cacheKey = "auction:" + auctionId;
+        if (Boolean.TRUE.equals(redis.hasKey(cacheKey))) return;
+
+        RLock rebuildLock = redisson.getLock("lock:rebuild:" + auctionId);
+        try {
+            rebuildLock.lock();
+            // Re-check inside the lock — another thread may have rebuilt while we waited
+            if (Boolean.TRUE.equals(redis.hasKey(cacheKey))) return;
+
+            Auction auction = repo.findByIdOrNull(auctionId);
+            if (auction == null) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "auction not found: " + auctionId);
+            }
+            if (!"OPEN".equals(auction.getStatus())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "auction is not open");
+            }
+            seedRedisCache(auction);
+            log.warn("rebuilt Redis cache for auction {} after cache miss", auctionId);
+        } finally {
+            if (rebuildLock.isHeldByCurrentThread()) rebuildLock.unlock();
+        }
+    }
+
+    private void seedRedisCache(Auction a) {
+        String key        = "auction:" + a.getAuctionId();
+        String winnersKey = key + ":winners";
+        // Clear any stale winners set (e.g. on cache rebuild after Redis restart)
+        redis.delete(winnersKey);
+        redis.opsForHash().putAll(key, Map.of(
+                "auction_id",      a.getAuctionId(),
+                "item_id",         a.getItemId(),
+                "seller_id",       a.getSellerId(),
+                "status",          a.getStatus(),
+                "current_highest", String.valueOf(a.getCurrentHighest()),
+                "highest_bidder",  a.getHighestBidder() != null ? a.getHighestBidder() : "",
+                "bid_count",       String.valueOf(a.getBidCount()),
+                "version",         String.valueOf(a.getVersion()),
+                "quantity",        String.valueOf(a.getQuantity() != null ? a.getQuantity() : 1L)
+        ));
+        // max_price stored separately — Map.of() has a 10-entry limit
+        redis.opsForHash().put(key, "max_price",
+                String.valueOf(a.getMaxPrice() != null ? a.getMaxPrice() : 0L));
+    }
+
+    /** Returns true if the auction's endTime is in the past. */
+    public boolean isExpired(Auction auction) {
+        try {
+            return Instant.parse(auction.getEndTime()).isBefore(Instant.now());
+        } catch (DateTimeParseException e) {
+            return false;
+        }
+    }
+}

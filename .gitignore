@@ -1,0 +1,42 @@
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Build output
+target/
+build/
+out/
+
+# Logs
+*.log
+logs/
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+
+# Maven
+.mvn/wrapper/maven-wrapper.jar
+
+# Environment / local overrides
+.env
+.env.*
+!.env.example
+application-local.yml
+application-local.yaml
+application-dev.yml
+application-dev.yaml
+
+# OS / temp
+*.swp
+*.swo
+*~
+tmp/
+temp/

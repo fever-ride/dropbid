@@ -1,0 +1,194 @@
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────────
+  # Infrastructure
+  # ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dropbid
+      POSTGRES_PASSWORD: dropbid
+      POSTGRES_DB: dropbid
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dropbid"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/shell/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─────────────────────────────────────────────
+  # Database init
+  # ─────────────────────────────────────────────
+  init-dynamo:
+    image: amazon/aws-cli:latest
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: dummy
+      AWS_SECRET_ACCESS_KEY: dummy
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./scripts/init-dynamo.sh:/init-dynamo.sh
+    entrypoint: ["/bin/bash", "/init-dynamo.sh"]
+
+  # ─────────────────────────────────────────────
+  # Microservices
+  # ─────────────────────────────────────────────
+  user-service:
+    build:
+      context: .
+      dockerfile: user-service/Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dropbid
+      SPRING_DATASOURCE_USERNAME: dropbid
+      SPRING_DATASOURCE_PASSWORD: dropbid
+      JWT_SECRET: dev-secret-change-in-production
+      SERVER_PORT: 8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  shop-service:
+    build:
+      context: .
+      dockerfile: shop-service/Dockerfile
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dropbid
+      SPRING_DATASOURCE_USERNAME: dropbid
+      SPRING_DATASOURCE_PASSWORD: dropbid
+      JWT_SECRET: dev-secret-change-in-production
+      SERVER_PORT: 8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  auction-service:
+    build:
+      context: .
+      dockerfile: auction-service/Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      AWS_ENDPOINT_OVERRIDE: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: dummy
+      AWS_SECRET_ACCESS_KEY: dummy
+      AWS_REGION: us-east-1
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      JWT_SECRET: dev-secret-change-in-production
+      CONCURRENCY_STRATEGY: pessimistic
+      SERVER_PORT: 8081
+    depends_on:
+      init-dynamo:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  bid-service:
+    build:
+      context: .
+      dockerfile: bid-service/Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      AWS_ENDPOINT_OVERRIDE: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: dummy
+      AWS_SECRET_ACCESS_KEY: dummy
+      AWS_REGION: us-east-1
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      JWT_SECRET: dev-secret-change-in-production
+      SERVER_PORT: 8084
+    depends_on:
+      init-dynamo:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      JWT_SECRET: dev-secret-change-in-production
+      SERVER_PORT: 8080
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dropbid
+      SPRING_DATASOURCE_USERNAME: dropbid
+      SPRING_DATASOURCE_PASSWORD: dropbid
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      JWT_SECRET: dev-secret-change-in-production
+      SERVER_PORT: 8085
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8085/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

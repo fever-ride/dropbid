@@ -1,0 +1,22 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: notification-service
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST:localhost}
+      port: ${SPRING_REDIS_PORT:6379}
+
+jwt:
+  secret: ${JWT_SECRET:dev-secret-change-in-production}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
