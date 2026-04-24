@@ -1,9 +1,11 @@
 package com.dropbid.user.service;
 
+import com.dropbid.shared.events.UserUpdatedEvent;
 import com.dropbid.shared.security.JwtUtil;
 import com.dropbid.user.dto.AuthResponse;
 import com.dropbid.user.dto.LoginRequest;
 import com.dropbid.user.dto.RegisterRequest;
+import com.dropbid.user.events.UserEventPublisher;
 import com.dropbid.user.model.Role;
 import com.dropbid.user.model.User;
 import com.dropbid.user.repository.UserRepository;
@@ -13,16 +15,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
+
 @Service
 public class UserService {
 
     private final UserRepository repo;
     private final JwtUtil jwtUtil;
+    private final UserEventPublisher eventPublisher;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
-    public UserService(UserRepository repo, JwtUtil jwtUtil) {
-        this.repo    = repo;
-        this.jwtUtil = jwtUtil;
+    public UserService(UserRepository repo, JwtUtil jwtUtil, UserEventPublisher eventPublisher) {
+        this.repo            = repo;
+        this.jwtUtil         = jwtUtil;
+        this.eventPublisher  = eventPublisher;
     }
 
     @Transactional
@@ -36,6 +42,10 @@ public class UserService {
         user.setUsername(req.username());
         user.setRole(req.role() != null ? Role.valueOf(req.role()) : Role.BUYER);
         repo.save(user);
+
+        eventPublisher.publish(new UserUpdatedEvent(
+                user.getId(), user.getUsername(), user.getRole().name(),
+                Instant.now().toString()));
 
         String token = jwtUtil.generateToken(user.getId(), user.getRole().name());
         return new AuthResponse(token, user.getId(), user.getRole().name());
