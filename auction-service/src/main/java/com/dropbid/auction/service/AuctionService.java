@@ -17,12 +17,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import com.dropbid.shared.IdGenerator;
+
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 @Service
 public class AuctionService {
@@ -61,7 +62,7 @@ public class AuctionService {
         }
 
         Auction auction = new Auction();
-        auction.setAuctionId(UUID.randomUUID().toString());
+        auction.setAuctionId(IdGenerator.newId());
         auction.setItemId(itemId);
         auction.setShopId(shopId);
         auction.setSellerId(sellerId);
@@ -148,7 +149,7 @@ public class AuctionService {
         repo.update(auctionMeta);
 
         // Publish event for Bid + Notification services
-        String bidId = UUID.randomUUID().toString();
+        String bidId = IdGenerator.newId();
         publisher.publishBidPlaced(new BidPlacedEvent(
                 auctionId, bidId, auctionMeta.getItemId(), auctionMeta.getSellerId(),
                 bidderId, amount, result.previousHighest(), result.previousBidder(),

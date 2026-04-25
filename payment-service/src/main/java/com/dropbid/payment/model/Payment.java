@@ -1,8 +1,8 @@
 package com.dropbid.payment.model;
 
+import com.dropbid.shared.IdGenerator;
 import jakarta.persistence.*;
 import java.time.Instant;
-import java.util.UUID;
 
 @Entity
 @Table(name = "payments")
@@ -46,7 +46,7 @@ public class Payment {
 
     @PrePersist
     void prePersist() {
-        if (id == null)        id = UUID.randomUUID().toString();
+        if (id == null)        id = IdGenerator.newId();
         if (createdAt == null) createdAt = Instant.now();
         updatedAt = Instant.now();
     }

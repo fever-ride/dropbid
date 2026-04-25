@@ -8,8 +8,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import com.dropbid.shared.IdGenerator;
+
 import java.util.List;
-import java.util.UUID;
 
 @Service
 public class BidService {
@@ -38,7 +39,7 @@ public class BidService {
         }
 
         Bid bid = new Bid();
-        bid.setBidId(event.bidId() != null ? event.bidId() : UUID.randomUUID().toString());
+        bid.setBidId(event.bidId() != null ? event.bidId() : IdGenerator.newId());
         bid.setAuctionId(event.auctionId());
         bid.setBidderId(event.userId());
         bid.setAmount(event.amount());

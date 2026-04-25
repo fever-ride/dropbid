@@ -1,9 +1,9 @@
 package com.dropbid.shop.model;
 
+import com.dropbid.shared.IdGenerator;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.UUID;
 
 @Entity
 @Table(name = "seller_profiles")
@@ -32,7 +32,7 @@ public class SellerProfile {
 
     @PrePersist
     void prePersist() {
-        if (id == null)        id = UUID.randomUUID().toString();
+        if (id == null)        id = IdGenerator.newId();
         if (createdAt == null) createdAt = Instant.now();
     }
 

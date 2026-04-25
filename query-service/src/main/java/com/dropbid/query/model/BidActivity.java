@@ -1,8 +1,8 @@
 package com.dropbid.query.model;
 
+import com.dropbid.shared.IdGenerator;
 import jakarta.persistence.*;
 import java.time.Instant;
-import java.util.UUID;
 
 @Entity
 @Table(name = "bid_activity",
@@ -44,7 +44,7 @@ public class BidActivity {
 
     @PrePersist
     void prePersist() {
-        if (id == null) id = UUID.randomUUID().toString();
+        if (id == null) id = IdGenerator.newId();
     }
 
     public String getId()                            { return id; }

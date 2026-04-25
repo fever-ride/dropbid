@@ -1,8 +1,8 @@
 package com.dropbid.shop.model;
 
+import com.dropbid.shared.IdGenerator;
 import jakarta.persistence.*;
 import java.time.Instant;
-import java.util.UUID;
 
 @Entity
 @Table(name = "collectible_items")
@@ -41,7 +41,7 @@ public class CollectibleItem {
 
     @PrePersist
     void prePersist() {
-        if (id == null)        id = UUID.randomUUID().toString();
+        if (id == null)        id = IdGenerator.newId();
         if (createdAt == null) createdAt = Instant.now();
     }
 
