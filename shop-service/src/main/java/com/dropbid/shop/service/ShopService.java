@@ -1,7 +1,9 @@
 package com.dropbid.shop.service;
 
+import com.dropbid.shared.events.ItemUpdatedEvent;
 import com.dropbid.shop.dto.CreateItemRequest;
 import com.dropbid.shop.dto.CreateShopRequest;
+import com.dropbid.shop.events.ItemEventPublisher;
 import com.dropbid.shop.model.CollectibleItem;
 import com.dropbid.shop.model.Condition;
 import com.dropbid.shop.model.SellerProfile;
@@ -12,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.util.List;
 
 @Service
@@ -19,10 +22,14 @@ public class ShopService {
 
     private final SellerProfileRepository profileRepo;
     private final CollectibleItemRepository itemRepo;
+    private final ItemEventPublisher eventPublisher;
 
-    public ShopService(SellerProfileRepository profileRepo, CollectibleItemRepository itemRepo) {
-        this.profileRepo = profileRepo;
-        this.itemRepo    = itemRepo;
+    public ShopService(SellerProfileRepository profileRepo,
+                       CollectibleItemRepository itemRepo,
+                       ItemEventPublisher eventPublisher) {
+        this.profileRepo    = profileRepo;
+        this.itemRepo       = itemRepo;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -63,7 +70,14 @@ public class ShopService {
         item.setOriginalRetailPrice(req.originalRetailPrice());
         item.setEstimatedMarketValue(req.estimatedMarketValue());
         item.setImageUrl(req.imageUrl());
-        return itemRepo.save(item);
+        CollectibleItem saved = itemRepo.save(item);
+
+        eventPublisher.publish(new ItemUpdatedEvent(
+                saved.getId(), shopId, saved.getTitle(), saved.getImageUrl(),
+                saved.getSeries(), saved.getCondition().name(),
+                Instant.now().toString()));
+
+        return saved;
     }
 
     public List<CollectibleItem> listItems(String shopId) {

@@ -11,6 +11,7 @@ public record BidPlacedEvent(
         String auctionId,
         String bidId,
         String itemId,
+        String sellerId,
         String userId,
         long amount,
         long previousHighest,

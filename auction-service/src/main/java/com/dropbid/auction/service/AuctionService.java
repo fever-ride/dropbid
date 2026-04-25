@@ -21,12 +21,16 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
 public class AuctionService {
 
     private static final Logger log = LoggerFactory.getLogger(AuctionService.class);
+
+    public static final String SCHEDULE_OPEN  = "auction:schedule:open";
+    public static final String SCHEDULE_CLOSE = "auction:schedule:close";
 
     private final AuctionRepository     repo;
     private final StringRedisTemplate   redis;
@@ -89,7 +93,16 @@ public class AuctionService {
         }
 
         repo.save(auction);
-        log.info("created auction {} item={} status={}", auction.getAuctionId(), itemId, auction.getStatus());
+
+        String auctionId = auction.getAuctionId();
+        if (scheduled) {
+            redis.opsForZSet().add(SCHEDULE_OPEN, auctionId,
+                    Instant.parse(startTime).toEpochMilli());
+        }
+        redis.opsForZSet().add(SCHEDULE_CLOSE, auctionId,
+                end.toEpochMilli());
+
+        log.info("created auction {} item={} status={}", auctionId, itemId, auction.getStatus());
         return auction;
     }
 
@@ -137,8 +150,8 @@ public class AuctionService {
         // Publish event for Bid + Notification services
         String bidId = UUID.randomUUID().toString();
         publisher.publishBidPlaced(new BidPlacedEvent(
-                auctionId, bidId, auctionMeta.getItemId(), bidderId,
-                amount, result.previousHighest(), result.previousBidder(),
+                auctionId, bidId, auctionMeta.getItemId(), auctionMeta.getSellerId(),
+                bidderId, amount, result.previousHighest(), result.previousBidder(),
                 Instant.now().toString(), Instant.now().toString()
         ));
 
@@ -158,6 +171,7 @@ public class AuctionService {
         auction.setStatus("OPEN");
         repo.update(auction);
         seedRedisCache(auction);
+        redis.opsForZSet().remove(SCHEDULE_OPEN, auctionId);
 
         log.info("opened auction {} item={}", auctionId, auction.getItemId());
     }
@@ -221,6 +235,7 @@ public class AuctionService {
         repo.update(auction);
         redis.delete(key);
         redis.delete(winnersKey);
+        redis.opsForZSet().remove(SCHEDULE_CLOSE, auctionId);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -285,5 +300,41 @@ public class AuctionService {
         } catch (DateTimeParseException e) {
             return false;
         }
+    }
+
+    /**
+     * Returns auction IDs whose scheduled time has passed.
+     * Used by AuctionOpener / AuctionCloser instead of full-table scans.
+     */
+    public Set<String> pollDueAuctionIds(String scheduleKey) {
+        double now = Instant.now().toEpochMilli();
+        Set<String> ids = redis.opsForZSet().rangeByScore(scheduleKey, 0, now);
+        return ids != null ? ids : Set.of();
+    }
+
+    /**
+     * Rebuild schedule sorted sets from DynamoDB on startup.
+     * Covers the case where Redis was restarted and schedule data was lost.
+     */
+    public void rebuildSchedules() {
+        int openCount = 0, closeCount = 0;
+
+        for (Auction a : repo.findByStatus("PENDING")) {
+            if (a.getStartTime() != null) {
+                redis.opsForZSet().add(SCHEDULE_OPEN, a.getAuctionId(),
+                        Instant.parse(a.getStartTime()).toEpochMilli());
+                openCount++;
+            }
+        }
+        for (Auction a : repo.findByStatus("OPEN")) {
+            if (a.getEndTime() != null) {
+                redis.opsForZSet().add(SCHEDULE_CLOSE, a.getAuctionId(),
+                        Instant.parse(a.getEndTime()).toEpochMilli());
+                closeCount++;
+            }
+        }
+
+        log.info("rebuilt auction schedules: {} pending opens, {} pending closes",
+                openCount, closeCount);
     }
 }

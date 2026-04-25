@@ -1,9 +1,9 @@
 server:
-  port: ${SERVER_PORT:8083}
+  port: ${SERVER_PORT:8086}
 
 spring:
   application:
-    name: shop-service
+    name: query-service
   threads:
     virtual:
       enabled: true
@@ -21,6 +21,7 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
   flyway:
     locations: classpath:db/migration
+    table: query_flyway_history
   data:
     redis:
       host: ${SPRING_REDIS_HOST:localhost}
@@ -28,6 +29,10 @@ spring:
 
 jwt:
   secret: ${JWT_SECRET:dev-secret-change-in-production}
+
+sync:
+  user-service-url: ${SYNC_USER_SERVICE_URL:http://localhost:8082}
+  shop-service-url: ${SYNC_SHOP_SERVICE_URL:http://localhost:8083}
 
 management:
   endpoints:

@@ -70,10 +70,14 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dropbid
       SPRING_DATASOURCE_USERNAME: dropbid
       SPRING_DATASOURCE_PASSWORD: dropbid
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
       JWT_SECRET: dev-secret-change-in-production
       SERVER_PORT: 8082
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
@@ -91,10 +95,14 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dropbid
       SPRING_DATASOURCE_USERNAME: dropbid
       SPRING_DATASOURCE_PASSWORD: dropbid
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
       JWT_SECRET: dev-secret-change-in-production
       SERVER_PORT: 8083
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8083/actuator/health || exit 1"]
@@ -186,6 +194,37 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8085/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  query-service:
+    build:
+      context: .
+      dockerfile: query-service/Dockerfile
+    ports:
+      - "8086:8086"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dropbid
+      SPRING_DATASOURCE_USERNAME: dropbid
+      SPRING_DATASOURCE_PASSWORD: dropbid
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      JWT_SECRET: dev-secret-change-in-production
+      SERVER_PORT: 8086
+      SYNC_USER_SERVICE_URL: http://user-service:8082
+      SYNC_SHOP_SERVICE_URL: http://shop-service:8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      shop-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8086/actuator/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
