@@ -39,6 +39,7 @@ public class Auction {
     public String getShopId()                { return shopId; }
     public void setShopId(String shopId)     { this.shopId = shopId; }
 
+    @DynamoDbSecondaryPartitionKey(indexNames = "seller-index")
     public String getSellerId()                  { return sellerId; }
     public void setSellerId(String sellerId)     { this.sellerId = sellerId; }
 
@@ -54,6 +55,7 @@ public class Auction {
     public String getHighestBidder()                     { return highestBidder; }
     public void setHighestBidder(String highestBidder)   { this.highestBidder = highestBidder; }
 
+    @DynamoDbSecondaryPartitionKey(indexNames = "status-index")
     public String getStatus()                { return status; }
     public void setStatus(String status)     { this.status = status; }
 

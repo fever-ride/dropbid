@@ -5,7 +5,7 @@ import com.dropbid.auction.concurrency.BidStrategy;
 import com.dropbid.auction.concurrency.StrategyManager;
 import com.dropbid.auction.events.AuctionEventPublisher;
 import com.dropbid.auction.model.Auction;
-import com.dropbid.auction.repository.AuctionRepository;
+import com.dropbid.auction.repository.AuctionStore;
 import com.dropbid.shared.events.AuctionClosedEvent;
 import com.dropbid.shared.events.BidPlacedEvent;
 import org.redisson.api.RLock;
@@ -19,6 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.dropbid.shared.IdGenerator;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.List;
@@ -32,14 +33,16 @@ public class AuctionService {
 
     public static final String SCHEDULE_OPEN  = "auction:schedule:open";
     public static final String SCHEDULE_CLOSE = "auction:schedule:close";
+    private static final String NULL_MARKER   = "__NULL__";
+    private static final Duration NULL_TTL    = Duration.ofSeconds(60);
 
-    private final AuctionRepository     repo;
+    private final AuctionStore           repo;
     private final StringRedisTemplate   redis;
     private final RedissonClient        redisson;
     private final AuctionEventPublisher publisher;
     private final StrategyManager       strategyManager;
 
-    public AuctionService(AuctionRepository repo,
+    public AuctionService(AuctionStore repo,
                           StringRedisTemplate redis,
                           RedissonClient redisson,
                           AuctionEventPublisher publisher,

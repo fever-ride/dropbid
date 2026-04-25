@@ -23,6 +23,7 @@ spring:
     locations: classpath:db/migration
     table: query_flyway_history
     baseline-on-migrate: true
+    baseline-version: 0
   data:
     redis:
       host: ${SPRING_REDIS_HOST:localhost}

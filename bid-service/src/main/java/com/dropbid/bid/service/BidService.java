@@ -1,7 +1,7 @@
 package com.dropbid.bid.service;
 
 import com.dropbid.bid.model.Bid;
-import com.dropbid.bid.repository.BidRepository;
+import com.dropbid.bid.repository.BidStore;
 import com.dropbid.shared.events.AuctionClosedEvent;
 import com.dropbid.shared.events.BidPlacedEvent;
 import org.slf4j.Logger;
@@ -17,9 +17,9 @@ public class BidService {
 
     private static final Logger log = LoggerFactory.getLogger(BidService.class);
 
-    private final BidRepository repo;
+    private final BidStore repo;
 
-    public BidService(BidRepository repo) {
+    public BidService(BidStore repo) {
         this.repo = repo;
     }
 

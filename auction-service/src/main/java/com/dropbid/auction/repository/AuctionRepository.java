@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 @Repository
-public class AuctionRepository {
+public class AuctionRepository implements AuctionStore {
 
     private static final String TABLE_NAME = "Auctions";
     private static final String STATUS_INDEX = "status-index";

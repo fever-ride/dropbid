@@ -99,7 +99,7 @@ report() {
   echo "═══════════════════════════════════════════════"
   echo "  Total requests : $total"
   echo "  Success (200)  : $ok"
-  echo "  Errors         : $err  ($(awk "BEGIN{printf \"%.1f\", $err/$total*100}")%)"
+  echo "  Errors         : $err  ($(python3 -c "print(f'{$err/$total*100:.1f}')" 2>/dev/null || echo "?")%)"
   echo ""
 
   if [[ "$ok" -gt 0 ]]; then
@@ -244,10 +244,10 @@ verify_consistency() {
     if [[ -n "$redis_bid_count" && "$redis_bid_count" != "(nil)" ]]; then
       if [[ "$redis_bid_count" == "$dynamo_bid_count" ]]; then
         echo "    [PASS] bid_count: Redis=$redis_bid_count == DynamoDB=$dynamo_bid_count"
-        ((pass++))
+        ((pass++)) || true || true
       else
         echo "    [FAIL] bid_count: Redis=$redis_bid_count != DynamoDB=$dynamo_bid_count"
-        ((fail++))
+        ((fail++)) || true || true
       fi
     else
       echo "    [SKIP] bid_count: Redis key absent (auction may be closed)"
@@ -257,10 +257,10 @@ verify_consistency() {
     if [[ -n "$redis_highest" && "$redis_highest" != "(nil)" ]]; then
       if [[ "$redis_highest" == "$dynamo_highest" ]]; then
         echo "    [PASS] current_highest: Redis=$redis_highest == DynamoDB=$dynamo_highest"
-        ((pass++))
+        ((pass++)) || true || true
       else
         echo "    [FAIL] current_highest: Redis=$redis_highest != DynamoDB=$dynamo_highest"
-        ((fail++))
+        ((fail++)) || true || true
       fi
     else
       echo "    [SKIP] current_highest: Redis key absent"
@@ -270,10 +270,10 @@ verify_consistency() {
     if [[ -n "$redis_winner_count" && "$redis_winner_count" != "(nil)" && "$redis_winner_count" -gt 0 ]]; then
       if [[ "$redis_winner_count" -le "$dynamo_quantity" ]]; then
         echo "    [PASS] winners_count: $redis_winner_count <= quantity=$dynamo_quantity"
-        ((pass++))
+        ((pass++)) || true || true
       else
         echo "    [FAIL] winners_count: $redis_winner_count > quantity=$dynamo_quantity"
-        ((fail++))
+        ((fail++)) || true || true
       fi
     fi
 
@@ -285,13 +285,13 @@ verify_consistency() {
 
     if [[ "$bid_svc_count" -gt 0 ]]; then
       echo "    [PASS] bid-service has $bid_svc_count records"
-      ((pass++))
+      ((pass++)) || true
     else
       if [[ "$dynamo_bid_count" -gt 0 ]]; then
         echo "    [WARN] bid-service has 0 records but DynamoDB bidCount=$dynamo_bid_count (consumer lag?)"
       else
         echo "    [PASS] bid-service has 0 records (no bids placed)"
-        ((pass++))
+        ((pass++)) || true || true
       fi
     fi
 
@@ -310,16 +310,16 @@ print(' '.join(sorted(w.keys())))
     if [[ -n "$redis_winners" && -n "$dynamo_winners" ]]; then
       if [[ "$redis_winners" == "$dynamo_winners" ]]; then
         echo "    [PASS] winners match: Redis ZSET == DynamoDB map"
-        ((pass++))
+        ((pass++)) || true || true
       else
         echo "    [FAIL] winners mismatch:"
         echo "           Redis : $redis_winners"
         echo "           Dynamo: $dynamo_winners"
-        ((fail++))
+        ((fail++)) || true || true
       fi
     elif [[ -z "$redis_winners" && -z "$dynamo_winners" ]]; then
       echo "    [PASS] no winners (both empty)"
-      ((pass++))
+      ((pass++)) || true
     fi
   done
 
@@ -358,10 +358,10 @@ verify_post_close() {
 
     if [[ "$status" == "CLOSED" ]]; then
       echo "    [PASS] status=CLOSED"
-      ((pass++))
+      ((pass++)) || true
     else
       echo "    [FAIL] status=$status (expected CLOSED)"
-      ((fail++))
+      ((fail++)) || true
     fi
 
     # Redis keys should be cleaned up
@@ -369,26 +369,26 @@ verify_post_close() {
     redis_exists=$(redis_cmd EXISTS "auction:$aid" 2>/dev/null || echo "0")
     if [[ "$redis_exists" == "0" ]]; then
       echo "    [PASS] Redis hash cleaned up"
-      ((pass++))
+      ((pass++)) || true
     else
       echo "    [FAIL] Redis hash still exists after close"
-      ((fail++))
+      ((fail++)) || true
     fi
 
     # Payment should exist (one per winner)
     local pay_json pay_status
     pay_json=$(curl -sf "$PAYMENT_SVC/payments/auction/$aid" \
-      -H "Authorization: Bearer $token" 2>/dev/null || echo '{}')
-    pay_status=$(echo "$pay_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+      -H "Authorization: Bearer $token" 2>/dev/null || echo '[]')
+    pay_status=$(echo "$pay_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['status'] if isinstance(d,list) and len(d)>0 else d.get('status','') if isinstance(d,dict) else '')" 2>/dev/null || echo "")
 
     if [[ "$pay_status" == "COMPLETED" || "$pay_status" == "FAILED" ]]; then
       echo "    [PASS] payment exists (status=$pay_status)"
-      ((pass++))
+      ((pass++)) || true
     elif [[ -z "$pay_status" ]]; then
       echo "    [WARN] no payment found (auction may have had no bids)"
     else
       echo "    [FAIL] payment in unexpected state: $pay_status"
-      ((fail++))
+      ((fail++)) || true
     fi
 
     # Bid-service: winners should be marked WON
@@ -404,10 +404,10 @@ verify_post_close() {
 
     if [[ "$active_count" -eq 0 ]]; then
       echo "    [PASS] no ACTIVE bids remain after close (WON=$won_count)"
-      ((pass++))
+      ((pass++)) || true
     else
       echo "    [FAIL] $active_count bids still ACTIVE after close"
-      ((fail++))
+      ((fail++)) || true
     fi
   done
 
@@ -444,10 +444,11 @@ test1() {
   ITEM_ID=$(create_item "$SELLER_TOKEN" "$SHOP_ID")
 
   echo "  Registering 50 buyers..."
-  declare -a BUYER_TOKENS
+  TOKENS_FILE="$RESULTS_DIR/.tokens_test1"
+  > "$TOKENS_FILE"
   for i in $(seq 1 50); do
     read -r tok _ <<< "$(register_user "lt1buyer${i}@test.com" "BUYER")"
-    BUYER_TOKENS+=("$tok")
+    echo "$tok" >> "$TOKENS_FILE"
   done
 
   for CONCURRENCY in 10 25 50; do
@@ -469,8 +470,8 @@ test1() {
     pids=()
     for i in $(seq 1 "$CONCURRENCY"); do
       (
-        idx=$(( (i - 1) % 50 ))
-        token="${BUYER_TOKENS[$idx]}"
+        line_num=$(( ((i - 1) % 50) + 1 ))
+        token=$(sed -n "${line_num}p" "$TOKENS_FILE")
         amount=$((200 + RANDOM))
         while [[ $(date +%s) -lt $END_AT ]]; do
           amount=$((amount + RANDOM % 10 + 1))
@@ -490,7 +491,8 @@ test1() {
     report_resources "$MONITOR_FILE" "Concurrency=$CONCURRENCY"
 
     # Consistency check on this single auction
-    verify_consistency "${BUYER_TOKENS[0]}" "$AUCTION_ID"
+    first_token=$(head -1 "$TOKENS_FILE")
+    verify_consistency "$first_token" "$AUCTION_ID"
   done
 }
 
@@ -511,18 +513,20 @@ test2() {
     python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 
   echo "  Creating 20 auctions..."
-  declare -a AUCTION_IDS
+  AUCTIONS_FILE="$RESULTS_DIR/.auctions_test2"
+  > "$AUCTIONS_FILE"
   for i in $(seq 1 20); do
     iid=$(create_item "$SELLER_TOKEN" "$SHOP_ID")
     aid=$(create_auction "$SELLER_TOKEN" "$SHOP_ID" "$iid" 300 3)
-    AUCTION_IDS+=("$aid")
+    echo "$aid" >> "$AUCTIONS_FILE"
   done
 
   echo "  Registering 100 buyers..."
-  declare -a BUYER_TOKENS
+  TOKENS_FILE="$RESULTS_DIR/.tokens_test2"
+  > "$TOKENS_FILE"
   for i in $(seq 1 100); do
     read -r tok _ <<< "$(register_user "lt2buyer${i}@test.com" "BUYER")"
-    BUYER_TOKENS+=("$tok")
+    echo "$tok" >> "$TOKENS_FILE"
   done
 
   CONCURRENCY=50
@@ -540,12 +544,12 @@ test2() {
   pids=()
   for i in $(seq 1 "$CONCURRENCY"); do
     (
-      bidder_idx=$(( (i - 1) % 100 ))
-      token="${BUYER_TOKENS[$bidder_idx]}"
+      line_num=$(( ((i - 1) % 100) + 1 ))
+      token=$(sed -n "${line_num}p" "$TOKENS_FILE")
       amount=$((200 + RANDOM))
       while [[ $(date +%s) -lt $END_AT ]]; do
-        auction_idx=$(( RANDOM % 20 ))
-        aid="${AUCTION_IDS[$auction_idx]}"
+        auction_idx=$(( RANDOM % 20 + 1 ))
+        aid=$(sed -n "${auction_idx}p" "$AUCTIONS_FILE")
         amount=$((amount + RANDOM % 10 + 1))
         fire_bid "$aid" "$token" "$amount" "$OUTPUT"
       done
@@ -575,7 +579,11 @@ for m in d.get('measurements',[]):
 
   # Consistency verification across all 20 auctions
   sleep 3  # allow last DynamoDB writes to settle
-  verify_consistency "${BUYER_TOKENS[0]}" "${AUCTION_IDS[@]}"
+  local first_token
+  first_token=$(head -1 "$TOKENS_FILE")
+  local AUCTION_IDS=()
+  while IFS= read -r line; do AUCTION_IDS+=("$line"); done < "$AUCTIONS_FILE"
+  verify_consistency "$first_token" "${AUCTION_IDS[@]}"
 }
 
 # ── Test 3: Lifecycle — bid + close + payment ────────────────────────────────
@@ -595,18 +603,20 @@ test3() {
     python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 
   echo "  Creating 10 auctions (close in 30s)..."
-  declare -a AUCTION_IDS
+  AUCTIONS_FILE="$RESULTS_DIR/.auctions_test3"
+  > "$AUCTIONS_FILE"
   for i in $(seq 1 10); do
     iid=$(create_item "$SELLER_TOKEN" "$SHOP_ID")
     aid=$(create_auction "$SELLER_TOKEN" "$SHOP_ID" "$iid" 30 1)
-    AUCTION_IDS+=("$aid")
+    echo "$aid" >> "$AUCTIONS_FILE"
   done
 
   echo "  Registering 30 buyers..."
-  declare -a BUYER_TOKENS
+  TOKENS_FILE="$RESULTS_DIR/.tokens_test3"
+  > "$TOKENS_FILE"
   for i in $(seq 1 30); do
     read -r tok _ <<< "$(register_user "lt3buyer${i}@test.com" "BUYER")"
-    BUYER_TOKENS+=("$tok")
+    echo "$tok" >> "$TOKENS_FILE"
   done
 
   OUTPUT="$RESULTS_DIR/test3_bids.txt"
@@ -623,12 +633,12 @@ test3() {
   pids=()
   for i in $(seq 1 "$CONCURRENCY"); do
     (
-      bidder_idx=$(( (i - 1) % 30 ))
-      token="${BUYER_TOKENS[$bidder_idx]}"
+      line_num=$(( ((i - 1) % 30) + 1 ))
+      token=$(sed -n "${line_num}p" "$TOKENS_FILE")
       amount=$((200 + RANDOM))
       while [[ $(date +%s) -lt $END_AT ]]; do
-        auction_idx=$(( RANDOM % 10 ))
-        aid="${AUCTION_IDS[$auction_idx]}"
+        auction_idx=$(( RANDOM % 10 + 1 ))
+        aid=$(sed -n "${auction_idx}p" "$AUCTIONS_FILE")
         amount=$((amount + RANDOM % 50 + 1))
         fire_bid "$aid" "$token" "$amount" "$OUTPUT"
       done
@@ -650,8 +660,11 @@ test3() {
 
   report_resources "$MONITOR_FILE" "Test 3 (full lifecycle)"
 
-  # Post-close consistency: status, cleanup, payments, bid statuses
-  verify_post_close "${BUYER_TOKENS[0]}" "${AUCTION_IDS[@]}"
+  local first_token
+  first_token=$(head -1 "$TOKENS_FILE")
+  local AUCTION_IDS=()
+  while IFS= read -r line; do AUCTION_IDS+=("$line"); done < "$AUCTIONS_FILE"
+  verify_post_close "$first_token" "${AUCTION_IDS[@]}"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ import software.amazon.awssdk.enhanced.dynamodb.model.*;
 import java.util.List;
 
 @Repository
-public class BidRepository {
+public class BidRepository implements BidStore {
 
     private static final String TABLE_NAME     = "Bids";
     private static final String AUCTION_INDEX  = "auction-index";

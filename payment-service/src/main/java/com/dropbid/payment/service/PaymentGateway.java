@@ -2,7 +2,7 @@ package com.dropbid.payment.service;
 
 import org.springframework.stereotype.Component;
 
-import java.util.random.RandomGenerator;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Mock payment gateway.
@@ -11,8 +11,6 @@ import java.util.random.RandomGenerator;
  */
 @Component
 public class PaymentGateway {
-
-    private static final RandomGenerator RNG = RandomGenerator.getDefault();
 
     public static final String DECISION_SUCCESS = "success";
     public static final String DECISION_FAILURE = "failure";
@@ -23,6 +21,6 @@ public class PaymentGateway {
      */
     public String charge(String paymentId, long amount, String userId) {
         // 90 % success rate
-        return RNG.nextInt(10) < 9 ? DECISION_SUCCESS : DECISION_FAILURE;
+        return ThreadLocalRandom.current().nextInt(10) < 9 ? DECISION_SUCCESS : DECISION_FAILURE;
     }
 }

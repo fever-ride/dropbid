@@ -1,0 +1,495 @@
+
+╔═══════════════════════════════════════════════╗
+║       Dropbid Load Test Suite                 ║
+╠═══════════════════════════════════════════════╣
+║  Results saved to: loadtest/results/              ║
+╚═══════════════════════════════════════════════╝
+
+████████████████████████████████████████████████
+  TEST 1: Single Auction — Lock Contention
+████████████████████████████████████████████████
+  Setting up seller...
+  Registering 50 buyers...
+
+  ── Concurrency: 10 ──
+  Auction: 019dc603-d2a1-714f-b7f1-66358f6d22b9
+  Resource monitor started (PID=17813)
+
+═══════════════════════════════════════════════
+  Test 1 — Concurrency=10
+═══════════════════════════════════════════════
+  Total requests : 1290
+  Success (200)  : 116
+  Errors         : 1174  (91.0%)
+
+  Latency (ms):
+    min   : 61
+    p50   : 88
+    p95   : 188
+    p99   : 269
+    max   : 269
+    avg   : 102.5
+  Total duration : ~1290 requests in test window
+
+  Error breakdown:
+    HTTP 403 : 1174
+═══════════════════════════════════════════════
+
+─── Resource Usage: Concurrency=10 ───
+  Container                             Peak CPU   Peak Mem
+  ─────────────────────────────────── ────────── ──────────
+  buildx_buildkit_singlearch0               0.4%       1.5%
+  dropbid-java-auction-service-1          241.9%       4.9%
+  dropbid-java-bid-service-1              106.7%       4.0%
+  dropbid-java-dynamodb-local-1            31.4%       2.8%
+  dropbid-java-notification-service-1       5.7%       3.4%
+  dropbid-java-payment-service-1           21.0%       5.2%
+  dropbid-java-postgres-1                   0.0%       1.2%
+  dropbid-java-query-service-1             18.3%       5.0%
+  dropbid-java-redis-1                     15.8%       0.1%
+  dropbid-java-shop-service-1               2.1%       4.7%
+  dropbid-java-user-service-1               0.6%       4.5%
+
+═══════════════════════════════════════════════
+  CONSISTENCY VERIFICATION
+═══════════════════════════════════════════════
+
+  ── Auction: 019dc603... ──
+    [PASS] bid_count: Redis=116 == DynamoDB=116
+    [PASS] current_highest: Redis=27970 == DynamoDB=27970
+    [PASS] winners_count: 1 <= quantity=1
+    [PASS] bid-service has 116 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Consistency Summary ──
+  PASS: 5   FAIL: 0
+  Redis and DynamoDB are consistent.
+═══════════════════════════════════════════════
+
+  ── Concurrency: 25 ──
+  Auction: 019dc604-0f2e-7d21-8331-99d973e885bf
+  Resource monitor started (PID=24540)
+
+═══════════════════════════════════════════════
+  Test 1 — Concurrency=25
+═══════════════════════════════════════════════
+  Total requests : 1355
+  Success (200)  : 48
+  Errors         : 1307  (96.5%)
+
+  Latency (ms):
+    min   : 79
+    p50   : 208
+    p95   : 469
+    p99   : 673
+    max   : 673
+    avg   : 238.4
+  Total duration : ~1355 requests in test window
+
+  Error breakdown:
+    HTTP 403 : 1307
+═══════════════════════════════════════════════
+
+─── Resource Usage: Concurrency=25 ───
+  Container                             Peak CPU   Peak Mem
+  ─────────────────────────────────── ────────── ──────────
+  buildx_buildkit_singlearch0              10.1%       1.5%
+  dropbid-java-auction-service-1          228.7%       5.0%
+  dropbid-java-bid-service-1               26.4%       4.2%
+  dropbid-java-dynamodb-local-1            27.1%       2.9%
+  dropbid-java-notification-service-1       4.8%       3.4%
+  dropbid-java-payment-service-1           15.7%       5.2%
+  dropbid-java-postgres-1                   0.2%       1.2%
+  dropbid-java-query-service-1             36.2%       5.0%
+  dropbid-java-redis-1                     20.5%       0.1%
+  dropbid-java-shop-service-1               1.4%       4.7%
+  dropbid-java-user-service-1               0.6%       4.5%
+
+═══════════════════════════════════════════════
+  CONSISTENCY VERIFICATION
+═══════════════════════════════════════════════
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=48 == DynamoDB=48
+    [PASS] current_highest: Redis=30856 == DynamoDB=30856
+    [PASS] winners_count: 1 <= quantity=1
+    [PASS] bid-service has 48 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Consistency Summary ──
+  PASS: 5   FAIL: 0
+  Redis and DynamoDB are consistent.
+═══════════════════════════════════════════════
+
+  ── Concurrency: 50 ──
+  Auction: 019dc604-4ea0-724b-a517-1b7729c57854
+  Resource monitor started (PID=31745)
+
+═══════════════════════════════════════════════
+  Test 1 — Concurrency=50
+═══════════════════════════════════════════════
+  Total requests : 1323
+  Success (200)  : 22
+  Errors         : 1301  (98.3%)
+
+  Latency (ms):
+    min   : 133
+    p50   : 375
+    p95   : 867
+    p99   : 983
+    max   : 983
+    avg   : 438.5
+  Total duration : ~1323 requests in test window
+
+  Error breakdown:
+    HTTP 403 : 1301
+═══════════════════════════════════════════════
+
+─── Resource Usage: Concurrency=50 ───
+  Container                             Peak CPU   Peak Mem
+  ─────────────────────────────────── ────────── ──────────
+  buildx_buildkit_singlearch0               0.0%       1.5%
+  dropbid-java-auction-service-1          272.2%       5.3%
+  dropbid-java-bid-service-1               13.0%       4.2%
+  dropbid-java-dynamodb-local-1            26.5%       3.0%
+  dropbid-java-notification-service-1      10.4%       3.4%
+  dropbid-java-payment-service-1           58.0%       5.2%
+  dropbid-java-postgres-1                   0.1%       1.2%
+  dropbid-java-query-service-1             11.3%       5.0%
+  dropbid-java-redis-1                     20.0%       0.1%
+  dropbid-java-shop-service-1               8.3%       4.7%
+  dropbid-java-user-service-1               1.6%       4.5%
+
+═══════════════════════════════════════════════
+  CONSISTENCY VERIFICATION
+═══════════════════════════════════════════════
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=22 == DynamoDB=22
+    [PASS] current_highest: Redis=32191 == DynamoDB=32191
+    [PASS] winners_count: 1 <= quantity=1
+    [PASS] bid-service has 22 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Consistency Summary ──
+  PASS: 5   FAIL: 0
+  Redis and DynamoDB are consistent.
+═══════════════════════════════════════════════
+
+████████████████████████████████████████████████
+  TEST 2: 20 Auctions — Real-World Throughput
+████████████████████████████████████████████████
+  Setting up seller...
+  Creating 20 auctions...
+  Registering 100 buyers...
+  Firing bids: 50 concurrent, 30s, across 20 auctions...
+  Resource monitor started (PID=39633)
+
+═══════════════════════════════════════════════
+  Test 2 — 20 Auctions, 50 Concurrent, 30s
+═══════════════════════════════════════════════
+  Total requests : 2398
+  Success (200)  : 341
+  Errors         : 2057  (85.8%)
+
+  Latency (ms):
+    min   : 189
+    p50   : 460
+    p95   : 922
+    p99   : 1176
+    max   : 1374
+    avg   : 509.5
+  Total duration : ~2398 requests in test window
+
+  Error breakdown:
+    HTTP 403 : 2057
+═══════════════════════════════════════════════
+
+─── Resource Usage: Test 2 ───
+  Container                             Peak CPU   Peak Mem
+  ─────────────────────────────────── ────────── ──────────
+  buildx_buildkit_singlearch0               1.5%       1.5%
+  dropbid-java-auction-service-1          723.6%       5.9%
+  dropbid-java-bid-service-1              100.3%       4.3%
+  dropbid-java-dynamodb-local-1            98.4%       3.1%
+  dropbid-java-notification-service-1      12.3%       3.4%
+  dropbid-java-payment-service-1           78.2%       5.2%
+  dropbid-java-postgres-1                   6.6%       1.2%
+  dropbid-java-query-service-1             24.3%       5.0%
+  dropbid-java-redis-1                     47.4%       0.1%
+  dropbid-java-shop-service-1              10.0%       4.7%
+  dropbid-java-user-service-1               3.4%       4.6%
+
+  Lock metrics (from actuator):
+    (not available)
+
+═══════════════════════════════════════════════
+  CONSISTENCY VERIFICATION
+═══════════════════════════════════════════════
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=16 == DynamoDB=16
+    [PASS] current_highest: Redis=29744 == DynamoDB=29744
+    [PASS] winners_count: 3 <= quantity=3
+    [PASS] bid-service has 16 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=18 == DynamoDB=18
+    [PASS] current_highest: Redis=29700 == DynamoDB=29700
+    [PASS] winners_count: 3 <= quantity=3
+    [PASS] bid-service has 18 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=13 == DynamoDB=13
+    [PASS] current_highest: Redis=28274 == DynamoDB=28274
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 13 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=20 == DynamoDB=20
+    [PASS] current_highest: Redis=29684 == DynamoDB=29684
+    [PASS] winners_count: 3 <= quantity=3
+    [PASS] bid-service has 20 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=22 == DynamoDB=22
+    [PASS] current_highest: Redis=29661 == DynamoDB=29661
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 22 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=13 == DynamoDB=13
+    [PASS] current_highest: Redis=29656 == DynamoDB=29656
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 13 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=16 == DynamoDB=16
+    [PASS] current_highest: Redis=29722 == DynamoDB=29722
+    [PASS] winners_count: 3 <= quantity=3
+    [PASS] bid-service has 16 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=15 == DynamoDB=15
+    [PASS] current_highest: Redis=29731 == DynamoDB=29731
+    [PASS] winners_count: 3 <= quantity=3
+    [PASS] bid-service has 15 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=17 == DynamoDB=17
+    [PASS] current_highest: Redis=29658 == DynamoDB=29658
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 17 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=14 == DynamoDB=14
+    [PASS] current_highest: Redis=29681 == DynamoDB=29681
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 14 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=19 == DynamoDB=19
+    [PASS] current_highest: Redis=29612 == DynamoDB=29612
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 19 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=13 == DynamoDB=13
+    [PASS] current_highest: Redis=29577 == DynamoDB=29577
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 13 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=17 == DynamoDB=17
+    [PASS] current_highest: Redis=28303 == DynamoDB=28303
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 17 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=16 == DynamoDB=16
+    [PASS] current_highest: Redis=29671 == DynamoDB=29671
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 16 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=20 == DynamoDB=20
+    [PASS] current_highest: Redis=28426 == DynamoDB=28426
+    [PASS] winners_count: 3 <= quantity=3
+    [PASS] bid-service has 20 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=22 == DynamoDB=22
+    [PASS] current_highest: Redis=29754 == DynamoDB=29754
+    [PASS] winners_count: 3 <= quantity=3
+    [PASS] bid-service has 22 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=12 == DynamoDB=12
+    [PASS] current_highest: Redis=29626 == DynamoDB=29626
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 12 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=22 == DynamoDB=22
+    [PASS] current_highest: Redis=29733 == DynamoDB=29733
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 22 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=19 == DynamoDB=19
+    [PASS] current_highest: Redis=29589 == DynamoDB=29589
+    [PASS] winners_count: 2 <= quantity=3
+    [PASS] bid-service has 19 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Auction: 019dc604... ──
+    [PASS] bid_count: Redis=17 == DynamoDB=17
+    [PASS] current_highest: Redis=29740 == DynamoDB=29740
+    [PASS] winners_count: 3 <= quantity=3
+    [PASS] bid-service has 17 records
+    [PASS] winners match: Redis ZSET == DynamoDB map
+
+  ── Consistency Summary ──
+  PASS: 100   FAIL: 0
+  Redis and DynamoDB are consistent.
+═══════════════════════════════════════════════
+
+████████████████████████████████████████████████
+  TEST 3: Lifecycle — Bid → Close → Payment
+████████████████████████████████████████████████
+  Setting up seller...
+  Creating 10 auctions (close in 30s)...
+  Registering 30 buyers...
+  Bidding phase (15s)...
+  Resource monitor started (PID=53600)
+
+═══════════════════════════════════════════════
+  Test 3 — Bid Phase
+═══════════════════════════════════════════════
+  Total requests : 1661
+  Success (200)  : 105
+  Errors         : 1556  (93.7%)
+
+  Latency (ms):
+    min   : 98
+    p50   : 175
+    p95   : 309
+    p99   : 357
+    max   : 363
+    avg   : 186.1
+  Total duration : ~1661 requests in test window
+
+  Error breakdown:
+    HTTP 403 : 1556
+═══════════════════════════════════════════════
+
+  Waiting for auctions to close + events to propagate (25s)...
+
+─── Resource Usage: Test 3 (full lifecycle) ───
+  Container                             Peak CPU   Peak Mem
+  ─────────────────────────────────── ────────── ──────────
+  buildx_buildkit_singlearch0               1.6%       1.5%
+  dropbid-java-auction-service-1          243.2%       6.2%
+  dropbid-java-bid-service-1               46.3%       4.3%
+  dropbid-java-dynamodb-local-1            58.8%       3.2%
+  dropbid-java-notification-service-1       5.2%       3.4%
+  dropbid-java-payment-service-1           23.2%       5.2%
+  dropbid-java-postgres-1                   0.9%       1.2%
+  dropbid-java-query-service-1             12.8%       5.0%
+  dropbid-java-redis-1                     26.5%       0.1%
+  dropbid-java-shop-service-1               1.3%       4.7%
+  dropbid-java-user-service-1              18.9%       4.6%
+
+═══════════════════════════════════════════════
+  POST-CLOSE CONSISTENCY VERIFICATION
+═══════════════════════════════════════════════
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [FAIL] 1 bids still ACTIVE after close
+
+  ── Auction: 019dc605... ──
+    [PASS] status=CLOSED
+    [PASS] Redis hash cleaned up
+    [WARN] no payment found (auction may have had no bids)
+    [PASS] no ACTIVE bids remain after close (WON=1)
+
+  ── Consumer Lag ──
+    bid_placed: pending=0
+    auction:closed: pending=0
+    payment:processed: pending=?
+    payment:failed: pending=?
+
+  ── Post-Close Summary ──
+  PASS: 29   FAIL: 1
+═══════════════════════════════════════════════
+
+Done. Raw data in loadtest/results/
