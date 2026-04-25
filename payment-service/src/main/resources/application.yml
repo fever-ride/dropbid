@@ -21,6 +21,8 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
   flyway:
     locations: classpath:db/migration
+    table: payment_flyway_history
+    baseline-on-migrate: true
   data:
     redis:
       host: ${SPRING_REDIS_HOST:localhost}
