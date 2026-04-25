@@ -16,20 +16,26 @@ Sellers list items with configurable start times, durations, and winner counts. 
   user-service     shop-service      auction-service
     :8082            :8083               :8081
   (PostgreSQL)     (PostgreSQL)    (DynamoDB + Redis)
-                                         │
-                              Redis Streams (bid_placed)
-                               ┌─────────┴──────────┐
-                               ▼                    ▼
-                          bid-service        notification-service
-                            :8084                 :8080
-                          (DynamoDB)           (STOMP/WS)
+      │                │                   │
+      │  user:updated  │  item:updated     │  bid_placed
+      └───────┐  ┌─────┘           ┌───────┴──────────┐
+              ▼  ▼                 ▼                   ▼
+         query-service        bid-service      notification-service
+            :8086               :8084               :8080
+          (PostgreSQL)        (DynamoDB)          (STOMP/WS)
 
                    Redis Streams (auction:closed)
-                               │
-                               ▼
-                        payment-service
-                            :8085
-                          (PostgreSQL)
+                        ┌──────┴──────┐
+                        ▼             ▼
+                 payment-service  query-service
+                    :8085           :8086
+                  (PostgreSQL)
+
+            Redis Streams (payment:processed / payment:failed)
+                        │
+                        ▼
+                  query-service
+                     :8086
 ```
 
 ## Service Ports
@@ -42,6 +48,7 @@ Sellers list items with configurable start times, durations, and winner counts. 
 | shop-service         | 8083 |
 | bid-service          | 8084 |
 | payment-service      | 8085 |
+| query-service        | 8086 |
 
 ## Quick Start
 
@@ -54,9 +61,9 @@ bash scripts/smoke-test.sh   # wait ~30s for services to be healthy
 
 | Store | Used By | Purpose |
 |-------|---------|---------|
-| PostgreSQL | user, shop, payment | ACID transactions, relational data |
+| PostgreSQL | user, shop, payment, query | ACID transactions, relational data, CQRS read store |
 | DynamoDB | auction, bid | Fast key-value, auction state, bid history |
-| Redis | auction | Hot-path cache, sorted sets, streams, distributed locks |
+| Redis | auction, user, shop, query | Hot-path cache, sorted sets, streams, distributed locks, scheduling |
 
 ---
 
@@ -81,11 +88,18 @@ bash scripts/smoke-test.sh   # wait ~30s for services to be healthy
 
 An auction is created as `OPEN` when no `startTime` is provided (or the provided time has already passed). When a future `startTime` is given, the auction is created as `PENDING` and opened automatically by `AuctionOpener` when the time arrives.
 
-`AuctionCloser` scans all `OPEN` auctions every second and closes those whose `endTime` has passed.
+Both schedulers use Redis Sorted Sets (`auction:schedule:open` and `auction:schedule:close`) to efficiently find auctions that are due. Each auction's start/end time is stored as the score, and the scheduler calls `ZRANGEBYSCORE` to fetch only the auctions whose time has passed — avoiding a full DynamoDB table scan. On service restart, `ScheduleRecovery` rebuilds these sorted sets from DynamoDB.
 
 ### Redis Data Structures
 
-Every open auction maintains two Redis keys.
+Two global Sorted Sets manage auction scheduling:
+
+| Key | Score | Purpose |
+|-----|-------|---------|
+| `auction:schedule:open` | `startTime` epoch ms | PENDING auctions awaiting open |
+| `auction:schedule:close` | `endTime` epoch ms | OPEN auctions awaiting close |
+
+Every open auction maintains two additional Redis keys.
 
 **Hash** `auction:{id}` — live bid state, read on every bid:
 
@@ -161,7 +175,7 @@ Note: the Sorted Set (`auction:{id}:winners`) cannot be fully rebuilt from Dynam
 ### Auction Close Flow
 
 ```
-AuctionCloser detects endTime has passed
+AuctionCloser: ZRANGEBYSCORE auction:schedule:close 0 <now>
         │
         ├── 1. Read winners ZSET from Redis
         │
@@ -172,7 +186,9 @@ AuctionCloser detects endTime has passed
         │
         ├── 4. DynamoDB: status = CLOSED
         │
-        └── 5. Delete Redis hash and ZSET keys
+        ├── 5. Delete Redis hash and ZSET keys
+        │
+        └── 6. ZREM auction:schedule:close {auctionId}
 ```
 
 The event is published **before** the DynamoDB status update. If the publish fails, DynamoDB remains `OPEN` and the scheduler retries on the next tick. If the publish succeeds but the DynamoDB write fails, downstream services receive a duplicate event on the next retry. Consumers are idempotent by design (via Redis Streams consumer group ack), so duplicate events are handled correctly.
@@ -243,11 +259,45 @@ Failed messages remain in the PEL (Pending Entry List) and are not automatically
 
 | Stream | Publisher | Consumers | Payload |
 |--------|-----------|-----------|---------|
-| `bid_placed` | auction-service | bid-service, notification-service | auctionId, bidId, userId, amount, previousBidder, previousHighest |
-| `auction:closed` | auction-service | payment-service, bid-service | auctionId, winners (Map of bidderId to amount), itemId, shopId |
-| `payment:processed` | payment-service | notification-service | auctionId, winnerId, amount |
-| `payment:failed` | payment-service | notification-service | auctionId, winnerId, reason |
+| `bid_placed` | auction-service | bid-service, notification-service, query-service | auctionId, bidId, sellerId, userId, amount, previousBidder, previousHighest |
+| `auction:closed` | auction-service | payment-service, bid-service, query-service | auctionId, winners (Map of bidderId to amount), itemId, shopId |
+| `payment:processed` | payment-service | query-service | auctionId, winnerId, amount |
+| `payment:failed` | payment-service | query-service | auctionId, winnerId, reason |
 | `payment:dlq` | payment-service | (manual replay) | failed payment records |
+| `user:updated` | user-service | query-service | userId, username, role |
+| `item:updated` | shop-service | query-service | itemId, shopId, title, imageUrl, series, condition |
+
+---
+
+## Query Service (CQRS Read Store)
+
+Query service provides cross-service read queries that would otherwise require API-layer aggregation across multiple services. It is purely event-driven on the write side and exposes read-only REST endpoints.
+
+### Data Model
+
+| Table | Granularity | Updated By |
+|-------|-------------|------------|
+| `auction_summary` | One row per auction | `bid_placed`, `auction:closed` |
+| `bid_activity` | One row per (auction, bidder) | `bid_placed`, `auction:closed`, `payment:*` |
+| `user_lookup` | One row per user | `user:updated` |
+| `item_lookup` | One row per item | `item:updated` |
+
+### Endpoints
+
+| Endpoint | Description | Auth |
+|----------|-------------|------|
+| `GET /query/my/bids?status=WON&page=0&size=20` | Buyer's bid history with item names and images | BUYER |
+| `GET /query/seller/auctions?status=CLOSED` | Seller's auction list with item details | SELLER |
+| `GET /query/seller/auctions/{id}/bids` | All bids on a seller's auction with bidder names | SELLER |
+| `GET /query/auctions?sort=bidCount&status=OPEN` | Public auction listing with item details | None |
+
+### Data Enrichment
+
+Responses are enriched with user names and item details from the lookup tables. Three layers ensure lookup data is available:
+
+1. **Event-driven** (primary): `user:updated` and `item:updated` events keep lookup tables current.
+2. **Cold-start sync** (startup): On boot, query-service pulls all users and items from `GET /internal/users` and `GET /internal/items` to backfill lookup tables.
+3. **On-demand fallback** (per-request): If a userId or itemId is missing from the lookup table at query time, the enrichment service fetches it from the source service, caches it locally, and includes it in the response.
 
 ---
 
