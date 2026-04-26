@@ -329,6 +329,37 @@ Auction close publishes the event before updating DynamoDB status. This trades t
 
 ---
 
+## Load Testing
+
+A load test suite validates bid latency, system throughput, resource usage, and data consistency under concurrent load. See [`loadtest/PLAN.md`](loadtest/PLAN.md) for the full test design.
+
+```bash
+bash loadtest/run.sh          # run all tests
+bash loadtest/run.sh test2    # run a single test
+```
+
+### Test Scenarios
+
+| Test | What it measures |
+|------|-----------------|
+| Test 1: Single auction, 10→25→50 concurrent bidders | Lock contention impact on latency |
+| Test 2: 20 auctions, 50 concurrent bidders, 30s | Real-world throughput (p50/p95/p99) |
+| Test 3: 10 auctions, bid→close→payment lifecycle | Event pipeline propagation and end-to-end consistency |
+
+### What's Verified
+
+**Performance**: Per-request latency percentiles, Redisson lock wait/hold times (via Micrometer), throughput.
+
+**Resources**: CPU and memory per container sampled every 2s via `docker stats`. Peak values reported per test.
+
+**Consistency** (after each test):
+- Redis `bid_count` and `current_highest` match DynamoDB
+- Redis winners ZSET members match DynamoDB winners map
+- Winners count never exceeds auction `quantity`
+- After auction close: all bids transition from ACTIVE to WON/OUTBID, payments are created, Redis keys are cleaned up, stream consumer lag reaches zero
+
+---
+
 ## Build Locally (without Docker)
 
 ```bash
