@@ -251,22 +251,36 @@ public class AuctionService {
      * Uses a short-lived Redisson lock (lock:rebuild:{id}) so that under a
      * cache-miss burst only one thread hits DynamoDB — the rest wait and then
      * find the key already rebuilt.
+     *
+     * Cache penetration protection: when the auction doesn't exist or isn't
+     * OPEN, a short-lived null marker is cached so repeated requests for the
+     * same invalid ID don't keep hitting DynamoDB.
      */
     private void ensureRedisCached(String auctionId) {
         String cacheKey = "auction:" + auctionId;
+        String nullKey  = "auction:null:" + auctionId;
+
         if (Boolean.TRUE.equals(redis.hasKey(cacheKey))) return;
+
+        if (Boolean.TRUE.equals(redis.hasKey(nullKey))) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "auction not found: " + auctionId);
+        }
 
         RLock rebuildLock = redisson.getLock("lock:rebuild:" + auctionId);
         try {
             rebuildLock.lock();
-            // Re-check inside the lock — another thread may have rebuilt while we waited
             if (Boolean.TRUE.equals(redis.hasKey(cacheKey))) return;
+            if (Boolean.TRUE.equals(redis.hasKey(nullKey))) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "auction not found: " + auctionId);
+            }
 
             Auction auction = repo.findByIdOrNull(auctionId);
             if (auction == null) {
+                redis.opsForValue().set(nullKey, NULL_MARKER, NULL_TTL);
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "auction not found: " + auctionId);
             }
             if (!"OPEN".equals(auction.getStatus())) {
+                redis.opsForValue().set(nullKey, NULL_MARKER, NULL_TTL);
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "auction is not open");
             }
             seedRedisCache(auction);
@@ -321,7 +335,7 @@ public class AuctionService {
      * Covers the case where Redis was restarted and schedule data was lost.
      */
     public void rebuildSchedules() {
-        int openCount = 0, closeCount = 0;
+        int openCount = 0, closeCount = 0, warmed = 0;
 
         for (Auction a : repo.findByStatus("PENDING")) {
             if (a.getStartTime() != null) {
@@ -336,9 +350,13 @@ public class AuctionService {
                         Instant.parse(a.getEndTime()).toEpochMilli());
                 closeCount++;
             }
+            if (!Boolean.TRUE.equals(redis.hasKey("auction:" + a.getAuctionId()))) {
+                seedRedisCache(a);
+                warmed++;
+            }
         }
 
-        log.info("rebuilt auction schedules: {} pending opens, {} pending closes",
-                openCount, closeCount);
+        log.info("rebuilt auction schedules: {} pending opens, {} pending closes, {} caches warmed",
+                openCount, closeCount, warmed);
     }
 }
