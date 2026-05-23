@@ -16,6 +16,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 
 import com.dropbid.shared.IdGenerator;
 
@@ -142,14 +143,18 @@ public class AuctionService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
         }
 
-        // Persist final state back to DynamoDB
+        // Persist final state back to DynamoDB (conditional: only if version advances)
         Auction auctionMeta = repo.findById(auctionId);
         auctionMeta.setCurrentHighest(result.newFloor());
         auctionMeta.setHighestBidder(result.topBidder());
         auctionMeta.setBidCount(result.bidCount());
         auctionMeta.setVersion(result.newVersion());
         auctionMeta.setWinners(result.currentWinners().isEmpty() ? null : result.currentWinners());
-        repo.update(auctionMeta);
+        try {
+            repo.update(auctionMeta);
+        } catch (ConditionalCheckFailedException e) {
+            log.debug("DynamoDB conditional update skipped for auction {} (stale version)", auctionId);
+        }
 
         // Publish event for Bid + Notification services
         String bidId = IdGenerator.newId();
@@ -173,7 +178,7 @@ public class AuctionService {
         if (auction == null || !"PENDING".equals(auction.getStatus())) return;
 
         auction.setStatus("OPEN");
-        repo.update(auction);
+        repo.updateUnconditional(auction);
         seedRedisCache(auction);
         redis.opsForZSet().remove(SCHEDULE_OPEN, auctionId);
 
@@ -236,7 +241,7 @@ public class AuctionService {
 
         // ── 3. Mark CLOSED in DynamoDB and clean up Redis ───────────────────
         auction.setStatus("CLOSED");
-        repo.update(auction);
+        repo.updateUnconditional(auction);
         redis.delete(key);
         redis.delete(winnersKey);
         redis.opsForZSet().remove(SCHEDULE_CLOSE, auctionId);

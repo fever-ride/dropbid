@@ -31,8 +31,7 @@ management:
   metrics:
     distribution:
       percentiles-histogram:
-        auction.lock.wait: true
-        auction.lock.hold: true
+        auction.bid.duration: true
 
 # Redisson config — overridden by RedissonConfig bean
 redisson:

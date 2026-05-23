@@ -3,9 +3,9 @@ package com.dropbid.auction.concurrency;
 /**
  * Pluggable strategy for placing a bid under concurrency control.
  * Three implementations mirror the original Go strategies:
- *  - OptimisticStrategy  — Redis WATCH/MULTI/EXEC (Lettuce SessionCallback)
- *  - PessimisticStrategy — Redisson RLock
- *  - QueueStrategy       — per-auction LinkedBlockingQueue + single-threaded executor
+ *  - PessimisticStrategy — Atomic Lua script (Redis single-threaded execution)
+ *  - OptimisticStrategy  — Redis WATCH/MULTI/EXEC (experimental)
+ *  - QueueStrategy       — per-auction LinkedBlockingQueue (experimental, single-instance only)
  */
 public interface BidStrategy {
 

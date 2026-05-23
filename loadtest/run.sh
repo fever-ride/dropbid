@@ -566,10 +566,10 @@ test2() {
   report "$OUTPUT" "Test 2 — 20 Auctions, 50 Concurrent, 30s"
   report_resources "$MONITOR_FILE" "Test 2"
 
-  # Lock metrics from actuator
+  # Bid duration metrics from actuator
   echo ""
-  echo "  Lock metrics (from actuator):"
-  curl -sf "$AUCTION_SVC/actuator/metrics/auction.lock.wait.seconds" 2>/dev/null | \
+  echo "  Bid duration metrics (from actuator):"
+  curl -sf "$AUCTION_SVC/actuator/metrics/auction.bid.duration" 2>/dev/null | \
     python3 -c "
 import sys,json
 d=json.load(sys.stdin)

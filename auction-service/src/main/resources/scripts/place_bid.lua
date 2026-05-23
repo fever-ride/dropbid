@@ -75,4 +75,7 @@ redis.call('HMSET', hashKey,
     'version',         tostring(version),
     'bid_count',       tostring(bidCount))
 
-return {tostring(version), tostring(bidCount), prevBidder, tostring(prevAmount), tostring(newFloor), topBidder}
+-- 8. Read full winners snapshot atomically (no gap for concurrent bids to interfere)
+local winnersRaw = redis.call('ZRANGE', winnersKey, 0, -1, 'WITHSCORES')
+
+return {tostring(version), tostring(bidCount), prevBidder, tostring(prevAmount), tostring(newFloor), topBidder, unpack(winnersRaw)}

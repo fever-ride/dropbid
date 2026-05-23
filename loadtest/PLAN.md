@@ -1,9 +1,13 @@
 # Load Test Plan
 
+> **Note**: This plan was written when `PessimisticStrategy` still used a Redisson distributed lock.
+> The lock has since been removed (see `docs/troubleshooting.md` #14). References to "lock contention"
+> below describe the pre-optimization state. The test scenarios and consistency checks remain valid.
+
 ## Goals
 
 1. **Validate claim**: "sub-50ms bid acknowledgement under concurrent load"
-2. **Identify bottleneck**: is it Redis, DynamoDB, Redisson lock contention, or application code?
+2. **Identify bottleneck**: is it Redis, DynamoDB, Lua script queuing, or application code?
 3. **Produce citable numbers**: p50 / p95 / p99 latency, throughput (bids/sec), error rate
 4. **Verify consistency**: Redis and DynamoDB stay in sync under concurrent writes
 5. **Profile resources**: CPU and memory per container to pinpoint where capacity is spent

@@ -10,4 +10,5 @@ public interface AuctionStore {
     Auction findByIdOrNull(String auctionId);
     List<Auction> findByStatus(String status);
     void update(Auction auction);
+    void updateUnconditional(Auction auction);
 }

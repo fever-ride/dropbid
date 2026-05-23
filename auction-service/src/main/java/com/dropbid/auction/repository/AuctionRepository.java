@@ -7,6 +7,8 @@ import org.springframework.web.server.ResponseStatusException;
 import software.amazon.awssdk.enhanced.dynamodb.*;
 import software.amazon.awssdk.enhanced.dynamodb.model.*;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.enhanced.dynamodb.Expression;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 
 import java.util.List;
 import java.util.Map;
@@ -53,6 +55,18 @@ public class AuctionRepository implements AuctionStore {
     }
 
     public void update(Auction auction) {
+        table.updateItem(UpdateItemEnhancedRequest.builder(Auction.class)
+                .item(auction)
+                .ignoreNulls(true)
+                .conditionExpression(Expression.builder()
+                        .expression("attribute_not_exists(version) OR version < :v")
+                        .putExpressionValue(":v", AttributeValue.builder()
+                                .n(String.valueOf(auction.getVersion())).build())
+                        .build())
+                .build());
+    }
+
+    public void updateUnconditional(Auction auction) {
         table.updateItem(UpdateItemEnhancedRequest.builder(Auction.class)
                 .item(auction)
                 .ignoreNulls(true)

@@ -1,5 +1,9 @@
 # Load Test Results
 
+> **Note**: These results were captured with the Redisson distributed lock still in place.
+> The lock has since been removed (see `docs/troubleshooting.md` #14). Post-optimization
+> results are expected to show significantly lower latency for Test 1 (single-auction hot path).
+
 Test environment: Docker Desktop (macOS, Apple Silicon), single-machine deployment, all services sharing CPU/memory.
 
 Date: 2026-04-25

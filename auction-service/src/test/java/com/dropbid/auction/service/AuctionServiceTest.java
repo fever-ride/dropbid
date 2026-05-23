@@ -47,6 +47,7 @@ class AuctionServiceTest {
                 return store.stream().filter(a -> status.equals(a.getStatus())).toList();
             }
             @Override public void update(Auction a) { /* in-place mutation */ }
+            @Override public void updateUnconditional(Auction a) { /* in-place mutation */ }
         };
 
         redis = mock(StringRedisTemplate.class);

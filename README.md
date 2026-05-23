@@ -63,7 +63,7 @@ bash scripts/smoke-test.sh   # wait ~30s for services to be healthy
 |-------|---------|---------|
 | PostgreSQL | user, shop, payment, query | ACID transactions, relational data, CQRS read store |
 | DynamoDB | auction, bid | Fast key-value, auction state, bid history |
-| Redis | auction, user, shop, query | Hot-path cache, sorted sets, streams, distributed locks, scheduling |
+| Redis | auction, user, shop, query | Hot-path cache, sorted sets, streams, Lua atomic operations, scheduling |
 
 ---
 
@@ -134,29 +134,26 @@ PUT /auctions/{id}/bid
         │
         ├── 2. Seller check              read seller_id from Redis hash; reject if bidderId matches
         │
-        ├── 3. Redisson lock acquired    lock:auction:{id}
-        │
-        ├── 4. Lua script (atomic)       place_bid.lua runs on Redis server
+        ├── 3. Lua script (atomic)       place_bid.lua runs on Redis server (single-threaded)
         │         ├── check status = OPEN
         │         ├── check amount > current_highest (floor)
         │         ├── check amount <= max_price (if set)
         │         ├── if winners full: evict floor holder from ZSET
         │         ├── ZADD new winner to ZSET
         │         ├── recalculate floor, update hash (HMSET)
-        │         └── return {version, bidCount, prevBidder, prevAmount, newFloor, topBidder}
+        │         ├── ZRANGE winners snapshot (atomic, no gap)
+        │         └── return {version, bidCount, prevBidder, prevAmount, newFloor, topBidder, winners...}
         │
-        ├── 5. Read full ZSET (inside lock)   consistent snapshot of current winners
+        ├── 4. DynamoDB conditional update   persist state only if version advances
         │
-        ├── 6. Redisson lock released
-        │
-        ├── 7. DynamoDB update           persist currentHighest, highestBidder, winners map, version
-        │
-        └── 8. Publish BidPlacedEvent    → bid_placed Redis Stream
+        └── 5. Publish BidPlacedEvent    → bid_placed Redis Stream
 ```
 
-### Why Lua and Redisson Together
+### Why No Distributed Lock
 
-The Lua script guarantees that the Redis read-validate-write sequence is atomic on the Redis server side, regardless of how many `auction-service` instances are running. However, the DynamoDB write after the Lua script is not part of Redis and cannot be included in a Lua script. The Redisson lock serialises concurrent bids for the same auction, protecting both the Lua execution order and the subsequent DynamoDB persistence.
+Redis executes Lua scripts atomically in its single-threaded event loop. Concurrent bids from multiple `auction-service` instances are queued at the Redis server and processed one at a time — the script IS the serialization mechanism. No external lock (Redisson, etc.) is needed because there is no gap between operations within the script.
+
+The DynamoDB write uses a conditional expression (`version < :newVersion`) to handle out-of-order arrivals from multiple instances. If a stale write arrives after a newer one, the condition fails and the write is silently discarded.
 
 ### Multi-Winner Auctions
 
@@ -168,7 +165,7 @@ When `quantity = 1`, behaviour is identical to a standard single-winner auction.
 
 ### Cache Rebuild (Cache Miss Handling)
 
-If the Redis hash key is missing (Redis restart or eviction), `ensureRedisCached()` rebuilds it from DynamoDB before the bid is processed. A Redisson lock (`lock:rebuild:{id}`) prevents a burst of concurrent requests from all hitting DynamoDB simultaneously. The lock uses Double-Checked Locking: the cache key is checked again inside the lock before rebuilding.
+If the Redis hash key is missing (Redis restart or eviction), `ensureRedisCached()` rebuilds it from DynamoDB before the bid is processed. A Redisson lock (`lock:rebuild:{id}`) prevents a burst of concurrent requests from all hitting DynamoDB simultaneously (thundering herd protection). The lock uses Double-Checked Locking: the cache key is checked again inside the lock before rebuilding.
 
 Note: the Sorted Set (`auction:{id}:winners`) cannot be fully rebuilt from DynamoDB after a Redis restart, because DynamoDB stores only the snapshot from the last successful bid. The `winners` map in DynamoDB reflects the state at the last bid and is used as a fallback at close time.
 
@@ -309,11 +306,11 @@ All services enable `spring.threads.virtual.enabled=true`. Redis Stream consumer
 
 ### Concurrency Strategy Selection
 
-The active strategy is `PessimisticStrategy`. Two alternatives exist in `concurrency/experimental/` for reference.
+The active strategy is `PessimisticStrategy` (atomic Lua script, no distributed lock). Two alternatives exist in `concurrency/experimental/` for reference.
 
 | Strategy | Mechanism | Active |
 |----------|-----------|--------|
-| Pessimistic | Redisson RLock + Lua script | Yes (default) |
+| Pessimistic | Atomic Lua script (Redis single-threaded execution) | Yes (default) |
 | Optimistic | Redis WATCH/MULTI/EXEC, 3 retries | No |
 | Queue | Per-auction LinkedBlockingQueue + virtual thread | No |
 
@@ -321,7 +318,7 @@ The Queue strategy is not suitable for multi-instance deployments because the in
 
 ### DynamoDB Winners Persistence
 
-On every accepted bid, the full winners map (bidderId to amount) is written to DynamoDB inside the Redisson lock, using a consistent ZSET snapshot taken before the lock is released. This ensures that if the Redis Sorted Set is lost before an auction closes, the complete winners list can be recovered from DynamoDB.
+On every accepted bid, the full winners map (bidderId to amount) is written to DynamoDB using a conditional update (version must advance). The winners snapshot is captured atomically inside the Lua script, guaranteeing consistency. If the Redis Sorted Set is lost before an auction closes, the winners list can be recovered from DynamoDB.
 
 ### Event-First Close Ordering
 
@@ -342,13 +339,13 @@ bash loadtest/run.sh test2    # run a single test
 
 | Test | What it measures |
 |------|-----------------|
-| Test 1: Single auction, 10→25→50 concurrent bidders | Lock contention impact on latency |
+| Test 1: Single auction, 10→25→50 concurrent bidders | Single-auction throughput under concurrency |
 | Test 2: 20 auctions, 50 concurrent bidders, 30s | Real-world throughput (p50/p95/p99) |
 | Test 3: 10 auctions, bid→close→payment lifecycle | Event pipeline propagation and end-to-end consistency |
 
 ### What's Verified
 
-**Performance**: Per-request latency percentiles, Redisson lock wait/hold times (via Micrometer), throughput.
+**Performance**: Per-request latency percentiles, bid duration (via Micrometer), throughput.
 
 **Resources**: CPU and memory per container sampled every 2s via `docker stats`. Peak values reported per test.
 
