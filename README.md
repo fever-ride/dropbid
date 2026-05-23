@@ -144,7 +144,7 @@ PUT /auctions/{id}/bid
         │         ├── ZRANGE winners snapshot (atomic, no gap)
         │         └── return {version, bidCount, prevBidder, prevAmount, newFloor, topBidder, winners...}
         │
-        ├── 4. DynamoDB conditional update   persist state only if version advances
+        ├── 4. Async DynamoDB snapshot        fire-and-forget; conditional write (version < :v) discards stale
         │
         └── 5. Publish BidPlacedEvent    → bid_placed Redis Stream
 ```
@@ -244,12 +244,6 @@ A bid moves from `ACTIVE` to `WON` when the auction closes and the bidder appear
 
 When the same bidder raises their own bid, the Lua script updates their score in the ZSET but may not always set `previousBidder` to themselves (only when they are the current floor holder). To prevent a single bidder from accumulating multiple `ACTIVE` records, `recordBid()` always invalidates the current bidder's own previous `ACTIVE` bids before recording the new one.
 
-### Consumer Group Reliability
-
-Both `BidEventConsumer` and `AuctionClosedConsumer` create their consumer groups with `MKSTREAM = true`. This ensures group creation succeeds even when bid service starts before any message has been published to the stream.
-
-Failed messages remain in the PEL (Pending Entry List) and are not automatically re-delivered on restart. Full PEL recovery would require `XAUTOCLAIM`. This is a known limitation acceptable for this project.
-
 ---
 
 ## Inter-Service Events
@@ -260,9 +254,21 @@ Failed messages remain in the PEL (Pending Entry List) and are not automatically
 | `auction:closed` | auction-service | payment-service, bid-service, query-service | auctionId, winners (Map of bidderId to amount), itemId, shopId |
 | `payment:processed` | payment-service | query-service | auctionId, winnerId, amount |
 | `payment:failed` | payment-service | query-service | auctionId, winnerId, reason |
-| `payment:dlq` | payment-service | (manual replay) | failed payment records |
+| `{stream}:dlq` | ResilientStreamConsumer | (manual replay / alerting) | messages that failed processing after 5 retries |
 | `user:updated` | user-service | query-service | userId, username, role |
 | `item:updated` | shop-service | query-service | itemId, shopId, title, imageUrl, series, condition |
+
+### Consumer Reliability (ResilientStreamConsumer)
+
+All stream consumers across every service extend a shared base class (`shared/streaming/ResilientStreamConsumer`) that provides:
+
+1. **Consume loop** — virtual thread, XREADGROUP with configurable batch size and block timeout
+2. **ACK on success** — messages are acknowledged only after `handleMessage()` completes without exception
+3. **PEL reclaim** — a dedicated reclaim thread scans every 30 seconds for unacknowledged messages; timed-out entries are re-delivered automatically
+4. **DLQ (Dead Letter Queue)** — messages that fail after 5 retries are moved to `{stream}:dlq` and acknowledged, preventing infinite retry loops
+5. **MKSTREAM** — consumer groups are created with `MKSTREAM = true`, so group creation succeeds even before any message is published
+
+Subclasses only implement `handleMessage()` and three config methods (stream/group/consumerName). The payment-service overrides the default single-consumer pattern with N parallel workers for higher throughput.
 
 ---
 
@@ -318,7 +324,7 @@ The Queue strategy is not suitable for multi-instance deployments because the in
 
 ### DynamoDB Winners Persistence
 
-On every accepted bid, the full winners map (bidderId to amount) is written to DynamoDB using a conditional update (version must advance). The winners snapshot is captured atomically inside the Lua script, guaranteeing consistency. If the Redis Sorted Set is lost before an auction closes, the winners list can be recovered from DynamoDB.
+On every accepted bid, the full winners map (bidderId → amount) is written asynchronously to DynamoDB via `CompletableFuture.runAsync` (fire-and-forget). The write uses a conditional expression (`version < :v`) so out-of-order arrivals are silently discarded. The winners snapshot is captured atomically inside the Lua script, guaranteeing consistency. This async write is cheap insurance — if Redis loses data before auction close, the winners list can be partially recovered from the last successful DynamoDB snapshot.
 
 ### Event-First Close Ordering
 

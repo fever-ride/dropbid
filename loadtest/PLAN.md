@@ -89,9 +89,7 @@ are bottlenecks and whether the entire system reaches a consistent state after c
 | Metric | Source | How |
 |--------|--------|-----|
 | Bid HTTP latency (p50/p95/p99) | Load test script | Per-request `curl` timing |
-| Lock wait time | Micrometer | `GET /actuator/metrics/auction.lock.wait.seconds` |
-| Lock hold time | Micrometer | `GET /actuator/metrics/auction.lock.hold.seconds` |
-| Lock timeouts | Micrometer | `GET /actuator/metrics/auction.lock.acquisitions?tag=result:timeout` |
+| Bid duration (Lua execution) | Micrometer | `GET /actuator/metrics/auction.bid.duration` |
 
 ### Resources
 
@@ -106,7 +104,7 @@ are bottlenecks and whether the entire system reaches a consistent state after c
 | Check | What it verifies |
 |-------|-----------------|
 | Redis bidCount == DynamoDB bidCount | Lua script atomicity |
-| Redis currentHighest == DynamoDB currentHighest | Lock-protected DynamoDB persistence |
+| Redis currentHighest == DynamoDB currentHighest | Async DynamoDB persistence consistency |
 | Redis ZSET members == DynamoDB winners map | Winners snapshot consistency |
 | Winners ZSET size <= quantity | Multi-winner correctness |
 | bid-service records exist | Event delivery (bid_placed stream) |
