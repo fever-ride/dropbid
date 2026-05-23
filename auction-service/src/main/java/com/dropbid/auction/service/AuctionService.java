@@ -26,6 +26,7 @@ import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 @Service
 public class AuctionService {
@@ -143,23 +144,29 @@ public class AuctionService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
         }
 
-        // Persist final state back to DynamoDB (conditional: only if version advances)
-        Auction auctionMeta = repo.findById(auctionId);
-        auctionMeta.setCurrentHighest(result.newFloor());
-        auctionMeta.setHighestBidder(result.topBidder());
-        auctionMeta.setBidCount(result.bidCount());
-        auctionMeta.setVersion(result.newVersion());
-        auctionMeta.setWinners(result.currentWinners().isEmpty() ? null : result.currentWinners());
-        try {
-            repo.update(auctionMeta);
-        } catch (ConditionalCheckFailedException e) {
-            log.debug("DynamoDB conditional update skipped for auction {} (stale version)", auctionId);
-        }
+        // Persist final state back to DynamoDB asynchronously (best-effort)
+        // Redis is the source of truth; closeAuction() writes the authoritative final state.
+        CompletableFuture.runAsync(() -> {
+            try {
+                Auction auctionMeta = repo.findById(auctionId);
+                auctionMeta.setCurrentHighest(result.newFloor());
+                auctionMeta.setHighestBidder(result.topBidder());
+                auctionMeta.setBidCount(result.bidCount());
+                auctionMeta.setVersion(result.newVersion());
+                auctionMeta.setWinners(result.currentWinners().isEmpty() ? null : result.currentWinners());
+                repo.update(auctionMeta);
+            } catch (ConditionalCheckFailedException e) {
+                log.debug("DynamoDB conditional update skipped for auction {} (stale version)", auctionId);
+            } catch (Exception e) {
+                log.warn("async DynamoDB persist failed for auction {}: {}", auctionId, e.getMessage());
+            }
+        });
 
-        // Publish event for Bid + Notification services
+        // Publish event for Bid + Notification services (read itemId/sellerId from Redis)
+        String itemId = (String) redis.opsForHash().get("auction:" + auctionId, "item_id");
         String bidId = IdGenerator.newId();
         publisher.publishBidPlaced(new BidPlacedEvent(
-                auctionId, bidId, auctionMeta.getItemId(), auctionMeta.getSellerId(),
+                auctionId, bidId, itemId, sellerId,
                 bidderId, amount, result.previousHighest(), result.previousBidder(),
                 Instant.now().toString(), Instant.now().toString()
         ));

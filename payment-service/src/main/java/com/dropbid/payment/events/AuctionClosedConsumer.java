@@ -3,6 +3,7 @@ package com.dropbid.payment.events;
 import com.dropbid.payment.model.Payment;
 import com.dropbid.payment.service.PaymentService;
 import com.dropbid.shared.events.AuctionClosedEvent;
+import com.dropbid.shared.streaming.ResilientStreamConsumer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -10,7 +11,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
-import org.springframework.data.redis.connection.stream.PendingMessage;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.connection.stream.StreamReadOptions;
@@ -24,76 +24,76 @@ import java.util.List;
  * Consumes the {@code auction:closed} Redis Stream with consumer group
  * {@code payment-service}.
  *
- * Improvement over Go:
- *  - N worker virtual threads (configurable) via a thread pool
- *  - XAUTOCLAIM: reclaim messages pending > 30 s from crashed consumers
- *  - Dead-letter queue pattern: failed events go to payment:dlq stream
+ * Uses N worker virtual threads for parallel processing. PEL reclaim is
+ * handled by the base class {@link ResilientStreamConsumer}.
  */
 @Component
-public class AuctionClosedConsumer {
+public class AuctionClosedConsumer extends ResilientStreamConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(AuctionClosedConsumer.class);
-
-    private static final String STREAM        = "auction:closed";
-    private static final String GROUP         = "payment-service";
-    private static final Duration BLOCK_TIMEOUT = Duration.ofSeconds(2);
 
     @Value("${payment.consumer.num-workers:10}")
     private int numWorkers;
 
     @Value("${payment.consumer.reclaim-interval-ms:30000}")
-    private long reclaimIntervalMs;
+    private long reclaimInterval;
 
     @Value("${payment.consumer.pending-timeout-ms:30000}")
-    private long pendingTimeoutMs;
+    private long pendingTimeout;
 
-    private final StringRedisTemplate redis;
-    private final PaymentService      paymentService;
-    private final ObjectMapper        mapper;
+    private final PaymentService paymentService;
+    private final ObjectMapper mapper;
 
     public AuctionClosedConsumer(StringRedisTemplate redis,
                                   PaymentService paymentService,
                                   ObjectMapper mapper) {
-        this.redis          = redis;
+        super(redis);
         this.paymentService = paymentService;
-        this.mapper         = mapper;
+        this.mapper = mapper;
     }
 
+    @Override protected String stream() { return "auction:closed"; }
+    @Override protected String group() { return "payment-service"; }
+    @Override protected String consumerName() { return "payment-consumer-0"; }
+    @Override protected int batchSize() { return 5; }
+    @Override protected long reclaimIntervalMs() { return reclaimInterval; }
+    @Override protected long pendingTimeoutMs() { return pendingTimeout; }
+
+    @Override
     @PostConstruct
-    void start() {
-        ensureConsumerGroup();
-
-        // N worker virtual threads consume in parallel
+    protected void init() {
+        ensureGroup();
+        // N worker virtual threads for parallel payment processing
         for (int i = 0; i < numWorkers; i++) {
-            final String consumerName = "payment-consumer-" + i;
-            Thread.ofVirtual().name("payment-closed-consumer-" + i).start(
-                    () -> consumeLoop(consumerName));
+            final String name = "payment-consumer-" + i;
+            Thread.ofVirtual().name("payment-closed-" + i).start(() -> workerLoop(name));
         }
-
-        // Single reclaim thread for XAUTOCLAIM
-        Thread.ofVirtual().name("payment-reclaim").start(this::reclaimLoop);
+        // Reclaim thread from base class
+        Thread.ofVirtual().name(consumerName() + "-reclaim").start(this::startReclaimLoop);
     }
 
-    // ── Main consume loop ─────────────────────────────────────────────────
-
-    @SuppressWarnings("unchecked")
-    private void consumeLoop(String consumerName) {
-        log.info("Payment consumer started: group={} consumer={}", GROUP, consumerName);
+    private void workerLoop(String workerName) {
+        log.info("Payment worker started: group={} consumer={}", group(), workerName);
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 List<MapRecord<String, Object, Object>> records = redis.opsForStream().read(
-                        Consumer.from(GROUP, consumerName),
-                        StreamReadOptions.empty().count(5).block(BLOCK_TIMEOUT),
-                        StreamOffset.create(STREAM, ReadOffset.lastConsumed())
+                        Consumer.from(group(), workerName),
+                        StreamReadOptions.empty().count(batchSize()).block(blockTimeout()),
+                        StreamOffset.create(stream(), ReadOffset.lastConsumed())
                 );
-
                 if (records == null || records.isEmpty()) continue;
 
                 for (MapRecord<String, Object, Object> record : records) {
-                    processRecord(record, consumerName);
+                    try {
+                        handleMessage(record);
+                        redis.opsForStream().acknowledge(stream(), group(), record.getId());
+                    } catch (Exception e) {
+                        log.error("[{}] failed to process record {}: {}",
+                                workerName, record.getId(), e.getMessage(), e);
+                    }
                 }
             } catch (Exception e) {
-                log.error("[{}] error in consume loop: {}", consumerName, e.getMessage(), e);
+                log.error("[{}] error in worker loop: {}", workerName, e.getMessage(), e);
                 try { Thread.sleep(1000); } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                 }
@@ -101,84 +101,36 @@ public class AuctionClosedConsumer {
         }
     }
 
-    // ── XAUTOCLAIM reclaim loop ──────────────────────────────────────────
-
-    private void reclaimLoop() {
-        log.info("Payment XAUTOCLAIM reclaim loop started");
-        while (!Thread.currentThread().isInterrupted()) {
-            try {
-                Thread.sleep(reclaimIntervalMs);
-                // Spring Data Redis wraps XAUTOCLAIM; use opsForStream().claim() equivalent
-                // We simulate via XPENDING + XCLAIM on old entries
-                reclaimPendingMessages();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                log.error("Error in reclaim loop: {}", e.getMessage(), e);
-            }
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private void reclaimPendingMessages() {
-        try {
-            // Read pending messages (delivered but not ACKed)
-            var pending = redis.opsForStream().pending(STREAM, GROUP,
-                    org.springframework.data.domain.Range.unbounded(), 50L);
-            if (pending == null) return;
-
-            for (PendingMessage pm : pending) {
-                long elapsed = pm.getElapsedTimeSinceLastDelivery().toMillis();
-                if (elapsed > pendingTimeoutMs) {
-                    // Reclaim by reading the actual message and reprocessing
-                    log.info("reclaiming stale pending message {}", pm.getId());
-                    List<MapRecord<String, Object, Object>> records = redis.opsForStream().read(
-                            Consumer.from(GROUP, "payment-reclaim"),
-                            StreamReadOptions.empty(),
-                            StreamOffset.create(STREAM, ReadOffset.from(pm.getId().getValue()))
-                    );
-                    if (records != null) {
-                        for (MapRecord<String, Object, Object> r : records) {
-                            processRecord(r, "payment-reclaim");
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.error("reclaimPendingMessages error: {}", e.getMessage());
-        }
-    }
-
-    // ── Event processing ─────────────────────────────────────────────────
-
-    private void processRecord(MapRecord<String, Object, Object> record, String consumer) {
+    @Override
+    protected void handleMessage(MapRecord<String, Object, Object> record) {
         try {
             String json = (String) record.getValue().get("data");
             AuctionClosedEvent event = mapper.readValue(json, AuctionClosedEvent.class);
-
-            log.info("[{}] processing auction:closed auctionId={}", consumer, event.auctionId());
-
             List<Payment> payments = paymentService.initiatePayments(event);
             for (Payment payment : payments) {
                 paymentService.processPayment(payment.getId());
             }
-
-            redis.opsForStream().acknowledge(STREAM, GROUP, record.getId());
         } catch (Exception e) {
-            log.error("[{}] failed to process auction:closed record {}: {}",
-                    consumer, record.getId(), e.getMessage(), e);
-            // Message stays in PEL — RecoveryJob will handle stuck payments separately
+            throw new RuntimeException(e);
         }
     }
 
-    private void ensureConsumerGroup() {
+    private void ensureGroup() {
         try {
-            redis.opsForStream().createGroup(STREAM, ReadOffset.from("0"), GROUP);
+            redis.execute((org.springframework.data.redis.core.RedisCallback<Object>) conn -> {
+                conn.streamCommands().xGroupCreate(
+                        stream().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        group(),
+                        ReadOffset.from("0"),
+                        true
+                );
+                return null;
+            });
         } catch (Exception e) {
             if (e.getMessage() != null && e.getMessage().contains("BUSYGROUP")) {
-                log.debug("Consumer group {} already exists", GROUP);
+                log.debug("Consumer group {} already exists", group());
             } else {
-                log.warn("Could not create consumer group {}: {}", GROUP, e.getMessage());
+                log.warn("Could not create consumer group {}: {}", group(), e.getMessage());
             }
         }
     }

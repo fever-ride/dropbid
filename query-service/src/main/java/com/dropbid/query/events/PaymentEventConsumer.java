@@ -3,78 +3,58 @@ package com.dropbid.query.events;
 import com.dropbid.query.repository.BidActivityRepository;
 import com.dropbid.shared.events.PaymentFailedEvent;
 import com.dropbid.shared.events.PaymentProcessedEvent;
+import com.dropbid.shared.streaming.ResilientStreamConsumer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.connection.stream.*;
+import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
 
+/**
+ * Consumes both {@code payment:processed} and {@code payment:failed} streams.
+ * Uses two inner consumer instances sharing the same service logic.
+ */
 @Component
 public class PaymentEventConsumer {
 
-    private static final Logger log = LoggerFactory.getLogger(PaymentEventConsumer.class);
-
-    private static final String PROCESSED_STREAM = "payment:processed";
-    private static final String FAILED_STREAM    = "payment:failed";
-    private static final String GROUP            = "query-service";
-    private static final Duration BLOCK_TIMEOUT  = Duration.ofSeconds(2);
-
-    private final StringRedisTemplate    redis;
-    private final BidActivityRepository  bidRepo;
-    private final ObjectMapper           mapper;
+    private final StringRedisTemplate redis;
+    private final BidActivityRepository bidRepo;
+    private final ObjectMapper mapper;
 
     public PaymentEventConsumer(StringRedisTemplate redis,
                                  BidActivityRepository bidRepo,
                                  ObjectMapper mapper) {
-        this.redis   = redis;
+        this.redis = redis;
         this.bidRepo = bidRepo;
-        this.mapper  = mapper;
+        this.mapper = mapper;
     }
 
     @PostConstruct
     void start() {
-        ensureConsumerGroup(PROCESSED_STREAM);
-        ensureConsumerGroup(FAILED_STREAM);
-        Thread.ofVirtual().name("query-payment-processed").start(
-                () -> consumeLoop(PROCESSED_STREAM, "query-pay-ok-1"));
-        Thread.ofVirtual().name("query-payment-failed").start(
-                () -> consumeLoop(FAILED_STREAM, "query-pay-fail-1"));
+        new ProcessedConsumer(redis, bidRepo, mapper).init();
+        new FailedConsumer(redis, bidRepo, mapper).init();
     }
 
-    private void consumeLoop(String stream, String consumerName) {
-        log.info("Query payment consumer started on stream={} group={}", stream, GROUP);
-        while (!Thread.currentThread().isInterrupted()) {
-            try {
-                List<MapRecord<String, Object, Object>> records = redis.opsForStream().read(
-                        Consumer.from(GROUP, consumerName),
-                        StreamReadOptions.empty().count(10).block(BLOCK_TIMEOUT),
-                        StreamOffset.create(stream, ReadOffset.lastConsumed())
-                );
-                if (records == null || records.isEmpty()) continue;
+    static class ProcessedConsumer extends ResilientStreamConsumer {
+        private final BidActivityRepository bidRepo;
+        private final ObjectMapper mapper;
 
-                for (MapRecord<String, Object, Object> record : records) {
-                    processRecord(stream, record);
-                }
-            } catch (Exception e) {
-                log.error("Error in query payment consumer [{}]: {}", stream, e.getMessage(), e);
-                try { Thread.sleep(1000); } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                }
-            }
+        ProcessedConsumer(StringRedisTemplate redis, BidActivityRepository bidRepo, ObjectMapper mapper) {
+            super(redis);
+            this.bidRepo = bidRepo;
+            this.mapper = mapper;
         }
-    }
 
-    private void processRecord(String stream, MapRecord<String, Object, Object> record) {
-        try {
-            String json = (String) record.getValue().get("data");
+        @Override protected String stream() { return "payment:processed"; }
+        @Override protected String group() { return "query-service"; }
+        @Override protected String consumerName() { return "query-pay-ok-1"; }
 
-            if (PROCESSED_STREAM.equals(stream)) {
+        @Override
+        protected void handleMessage(MapRecord<String, Object, Object> record) {
+            try {
+                String json = (String) record.getValue().get("data");
                 PaymentProcessedEvent event = mapper.readValue(json, PaymentProcessedEvent.class);
                 bidRepo.findByAuctionIdAndBidderId(event.auctionId(), event.userId())
                         .ifPresent(ba -> {
@@ -83,7 +63,30 @@ public class PaymentEventConsumer {
                             ba.setUpdatedAt(Instant.now());
                             bidRepo.save(ba);
                         });
-            } else {
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    static class FailedConsumer extends ResilientStreamConsumer {
+        private final BidActivityRepository bidRepo;
+        private final ObjectMapper mapper;
+
+        FailedConsumer(StringRedisTemplate redis, BidActivityRepository bidRepo, ObjectMapper mapper) {
+            super(redis);
+            this.bidRepo = bidRepo;
+            this.mapper = mapper;
+        }
+
+        @Override protected String stream() { return "payment:failed"; }
+        @Override protected String group() { return "query-service"; }
+        @Override protected String consumerName() { return "query-pay-fail-1"; }
+
+        @Override
+        protected void handleMessage(MapRecord<String, Object, Object> record) {
+            try {
+                String json = (String) record.getValue().get("data");
                 PaymentFailedEvent event = mapper.readValue(json, PaymentFailedEvent.class);
                 bidRepo.findByAuctionIdAndBidderId(event.auctionId(), event.userId())
                         .ifPresent(ba -> {
@@ -92,22 +95,8 @@ public class PaymentEventConsumer {
                             ba.setUpdatedAt(Instant.now());
                             bidRepo.save(ba);
                         });
-            }
-
-            redis.opsForStream().acknowledge(stream, GROUP, record.getId());
-        } catch (Exception e) {
-            log.error("Failed to process {} record {}: {}", stream, record.getId(), e.getMessage(), e);
-        }
-    }
-
-    private void ensureConsumerGroup(String stream) {
-        try {
-            redis.opsForStream().createGroup(stream, ReadOffset.from("0"), GROUP);
-        } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().contains("BUSYGROUP")) {
-                log.debug("Consumer group {} already exists for {}", GROUP, stream);
-            } else {
-                log.warn("Could not create consumer group {} for {}: {}", GROUP, stream, e.getMessage());
+            } catch (Exception e) {
+                throw new RuntimeException(e);
             }
         }
     }
