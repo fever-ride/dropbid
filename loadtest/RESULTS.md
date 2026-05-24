@@ -3,6 +3,7 @@
 > **Note**: These results were captured with the Redisson distributed lock still in place.
 > The lock has since been removed (see `docs/troubleshooting.md` #14). Post-optimization
 > results are expected to show significantly lower latency for Test 1 (single-auction hot path).
+> bid-service has since been merged into auction-service; references to bid-service in the results below reflect the pre-consolidation state.
 
 Test environment: Docker Desktop (macOS, Apple Silicon), single-machine deployment, all services sharing CPU/memory.
 
@@ -71,7 +72,7 @@ With 50 concurrent threads spread across 20 auctions, each auction averages 2-3 
 |-------|--------|
 | 10/10 auctions status = CLOSED | PASS |
 | 10/10 Redis hash/ZSET keys cleaned up | PASS |
-| 10/10 no ACTIVE bids remain (all transitioned to WON/OUTBID) | PASS |
+| 10/10 bid history records present | PASS |
 | bid_placed consumer lag | 0 pending |
 | auction:closed consumer lag | 0 pending |
 
@@ -79,7 +80,7 @@ With 50 concurrent threads spread across 20 auctions, each auction averages 2-3 
 
 **Analysis**:
 
-The event pipeline (Redis Streams -> bid-service, payment-service) keeps up under load. All bid statuses transition correctly and Redis keys are fully cleaned up after auction close. Zero consumer lag confirms consumption rate matches production rate.
+The event pipeline (Redis Streams → payment-service, query-service) keeps up under load. Bid history records are written synchronously in auction-service. Redis keys are fully cleaned up after auction close. Zero consumer lag confirms consumption rate matches production rate.
 
 ## Resource Usage
 
@@ -88,7 +89,6 @@ Peak CPU/Memory per container (Test 2, the most representative):
 | Container | Peak CPU | Peak Mem |
 |-----------|----------|----------|
 | auction-service | 291.9% | 5.7% |
-| bid-service | 75.1% | 4.0% |
 | DynamoDB Local | 73.1% | 3.9% |
 | Redis | 32.0% | 0.1% |
 | payment-service | 14.6% | 5.2% |
@@ -116,6 +116,6 @@ On AWS (managed DynamoDB + ECS/EKS with dedicated resources), p50 is expected to
 
 1. **100% data consistency**: Redis and DynamoDB stayed in sync across all tests. Zero data loss.
 2. **Pessimistic locking works**: Correctly serialized all bids under high concurrency. No race conditions detected.
-3. **Event pipeline is reliable**: All bid statuses transitioned correctly. Consumer lag reached zero.
+3. **Event pipeline is reliable**: Payment and query consumers processed all events correctly. Consumer lag reached zero.
 4. **Clear bottleneck**: auction-service has the highest CPU. The optimization path is to move the DynamoDB write outside the lock hold window (async persistence).
 5. **Horizontal scaling is viable**: Locks are per-auction, so multi-auction workloads parallelize naturally. Adding auction-service instances increases throughput proportionally.

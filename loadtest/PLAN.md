@@ -3,6 +3,7 @@
 > **Note**: This plan was written when `PessimisticStrategy` still used a Redisson distributed lock.
 > The lock has since been removed (see `docs/troubleshooting.md` #14). References to "lock contention"
 > below describe the pre-optimization state. The test scenarios and consistency checks remain valid.
+> bid-service has since been merged into auction-service; references to bid-service below reflect the pre-consolidation state.
 
 ## Goals
 
@@ -57,12 +58,12 @@ means 20x the parallelism of Test 1. This is the number for the resume.
 **Consistency checks after test**:
 - All 20 auctions: Redis state == DynamoDB state
 - DynamoDB winners map members == Redis ZSET members
-- bid-service has records for each auction with bids
+- bid history records exist for each auction with bids (GET /auctions/{id}/bids)
 
 ### Test 3 — Auction Lifecycle Under Load
 
 End-to-end test: create auction → bid → auction closes → payment created.
-Validates that the event pipeline (Redis Streams → bid-service, payment-service) keeps up.
+Validates that the event pipeline (Redis Streams → payment-service, query-service) keeps up.
 
 | Parameter         | Value             |
 |-------------------|-------------------|
@@ -79,7 +80,7 @@ are bottlenecks and whether the entire system reaches a consistent state after c
 - All auctions status == CLOSED
 - Redis hash and ZSET keys deleted (cleanup)
 - Payment exists for each auction with bids
-- No ACTIVE bids remain (all transitioned to WON or OUTBID)
+- Bid history records exist; winners identified via Auction.winners (no WON status in Bids table)
 - Redis Stream consumer lag == 0
 
 ## Metrics Captured
@@ -107,8 +108,8 @@ are bottlenecks and whether the entire system reaches a consistent state after c
 | Redis currentHighest == DynamoDB currentHighest | Async DynamoDB persistence consistency |
 | Redis ZSET members == DynamoDB winners map | Winners snapshot consistency |
 | Winners ZSET size <= quantity | Multi-winner correctness |
-| bid-service records exist | Event delivery (bid_placed stream) |
-| No ACTIVE bids after close | Event delivery (auction:closed stream) |
+| Bid history records exist | Synchronous write in placeBid() |
+| Winners recorded in Auction.winners | Close flow persistence |
 | Payments created after close | Event delivery (auction:closed → payment-service) |
 | Redis keys cleaned after close | Close flow cleanup |
 | Stream consumer lag == 0 | All events fully consumed |

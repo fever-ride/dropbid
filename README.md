@@ -20,9 +20,9 @@ Sellers list items with configurable start times, durations, and winner counts. 
       │  user:updated  │  item:updated     │  bid_placed
       └───────┐  ┌─────┘           ┌───────┴──────────┐
               ▼  ▼                 ▼                   ▼
-         query-service        bid-service      notification-service
-            :8086               :8084               :8080
-          (PostgreSQL)        (DynamoDB)          (STOMP/WS)
+         query-service        notification-service
+            :8086                  :8080
+          (PostgreSQL)           (STOMP/WS)
 
                    Redis Streams (auction:closed)
                         ┌──────┴──────┐
@@ -46,7 +46,6 @@ Sellers list items with configurable start times, durations, and winner counts. 
 | auction-service      | 8081 |
 | user-service         | 8082 |
 | shop-service         | 8083 |
-| bid-service          | 8084 |
 | payment-service      | 8085 |
 | query-service        | 8086 |
 
@@ -62,7 +61,7 @@ bash scripts/smoke-test.sh   # wait ~30s for services to be healthy
 | Store | Used By | Purpose |
 |-------|---------|---------|
 | PostgreSQL | user, shop, payment, query | ACID transactions, relational data, CQRS read store |
-| DynamoDB | auction, bid | Fast key-value, auction state, bid history |
+| DynamoDB | auction | Fast key-value, auction state, bid history |
 | Redis | auction, user, shop, query | Hot-path cache, sorted sets, streams, Lua atomic operations, scheduling |
 
 ---
@@ -146,7 +145,10 @@ PUT /auctions/{id}/bid
         │
         ├── 4. Async DynamoDB snapshot        fire-and-forget; conditional write (version < :v) discards stale
         │
-        └── 5. Publish BidPlacedEvent    → bid_placed Redis Stream
+        ├── 5. Write bid history to DynamoDB (synchronous)
+        │         recordBidHistory(): mark previous ACTIVE bids OUTBID, save new bid as ACTIVE
+        │
+        └── 6. Publish BidPlacedEvent    → bid_placed Redis Stream
 ```
 
 ### Why No Distributed Lock
@@ -203,46 +205,34 @@ The event is published **before** the DynamoDB status update. If the publish fai
 
 ---
 
-## Bid Service
+## Bid History
 
-### Design
+Bid history is owned by `auction-service` — there is no separate bid-service. Bid records are written synchronously inside `placeBid()` via `recordBidHistory()` immediately after the Lua script succeeds.
 
-Bid service is purely event-driven. It has no write endpoints. All bid records are created and updated by consuming Redis Streams.
+### Storage
 
-```
-bid_placed stream ──► BidEventConsumer ──► recordBid()
-                                                │
-                                         mark own previous ACTIVE bids as OUTBID
-                                         mark knocked-out bidder's ACTIVE bid as OUTBID
-                                         save new bid with status ACTIVE
+Bid records are stored in the DynamoDB `Bids` table (append-only, one row per bid attempt).
 
-auction:closed stream ──► AuctionClosedConsumer ──► markWon()
-                                                          │
-                                               mark winners' ACTIVE bids as WON
-```
+### Bid Statuses
 
-### Bid Status Transitions
+| Status | Meaning |
+|--------|---------|
+| `ACTIVE` | The bid was never superseded — it is still the bidder's most recent bid on this auction |
+| `OUTBID` | A higher bid arrived later, or the same bidder raised their own bid |
 
-```
-            new bid accepted
-                  │
-               ACTIVE
-              /       \
-    outbid by          auction
-    higher bid          closes
-        │                  │
-     OUTBID              WON
-```
-
-A bid moves from `ACTIVE` to `OUTBID` when either:
-- A different bidder's higher bid displaces it from the winners set (floor eviction)
-- The same bidder raises their own bid, making their previous record stale
-
-A bid moves from `ACTIVE` to `WON` when the auction closes and the bidder appears in the `winners` map of `AuctionClosedEvent`.
+There is no `WON` status in the `Bids` table. Winner information lives in `Auction.winners` (set at auction close). Consumers can determine winners by reading that field.
 
 ### Self-Raise Handling
 
-When the same bidder raises their own bid, the Lua script updates their score in the ZSET but may not always set `previousBidder` to themselves (only when they are the current floor holder). To prevent a single bidder from accumulating multiple `ACTIVE` records, `recordBid()` always invalidates the current bidder's own previous `ACTIVE` bids before recording the new one.
+When the same bidder raises their own bid, `recordBidHistory()` always marks the current bidder's own previous `ACTIVE` bids as `OUTBID` before writing the new bid record. The lookup uses a bidder-index GSI scoped to the auction, not a full auction scan.
+
+### Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /auctions/{id}/bids` | All bids on a specific auction |
+| `GET /bids/me` | Bids placed by the authenticated user |
+| `GET /bids/user/{userId}` | Bids placed by a specific user |
 
 ---
 
@@ -250,8 +240,8 @@ When the same bidder raises their own bid, the Lua script updates their score in
 
 | Stream | Publisher | Consumers | Payload |
 |--------|-----------|-----------|---------|
-| `bid_placed` | auction-service | bid-service, notification-service, query-service | auctionId, bidId, sellerId, userId, amount, previousBidder, previousHighest |
-| `auction:closed` | auction-service | payment-service, bid-service, query-service | auctionId, winners (Map of bidderId to amount), itemId, shopId |
+| `bid_placed` | auction-service | notification-service, query-service | auctionId, bidId, sellerId, userId, amount, previousBidder, previousHighest |
+| `auction:closed` | auction-service | payment-service, query-service | auctionId, winners (Map of bidderId to amount), itemId, shopId |
 | `payment:processed` | payment-service | query-service | auctionId, winnerId, amount |
 | `payment:failed` | payment-service | query-service | auctionId, winnerId, reason |
 | `{stream}:dlq` | ResilientStreamConsumer | (manual replay / alerting) | messages that failed processing after 5 retries |
@@ -359,7 +349,7 @@ bash loadtest/run.sh test2    # run a single test
 - Redis `bid_count` and `current_highest` match DynamoDB
 - Redis winners ZSET members match DynamoDB winners map
 - Winners count never exceeds auction `quantity`
-- After auction close: all bids transition from ACTIVE to WON/OUTBID, payments are created, Redis keys are cleaned up, stream consumer lag reaches zero
+- After auction close: winners are recorded in `Auction.winners`; bid records remain as ACTIVE/OUTBID (no WON status in Bids table), payments are created, Redis keys are cleaned up, stream consumer lag reaches zero
 
 ---
 
