@@ -2,9 +2,9 @@ package com.dropbid.query.controller;
 
 import com.dropbid.query.dto.EnrichedAuctionSummary;
 import com.dropbid.query.dto.EnrichedBidActivity;
-import com.dropbid.query.model.AuctionSummary;
-import com.dropbid.query.repository.AuctionSummaryRepository;
-import com.dropbid.query.repository.BidActivityRepository;
+import com.dropbid.query.model.Auction;
+import com.dropbid.query.repository.AuctionRepository;
+import com.dropbid.query.repository.BidRepository;
 import com.dropbid.shared.security.UserPrincipal;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -20,12 +20,12 @@ import java.util.List;
 @PreAuthorize("hasRole('SELLER')")
 public class SellerQueryController {
 
-    private final AuctionSummaryRepository auctionRepo;
-    private final BidActivityRepository    bidRepo;
-    private final EnrichmentService        enrichment;
+    private final AuctionRepository auctionRepo;
+    private final BidRepository     bidRepo;
+    private final EnrichmentService enrichment;
 
-    public SellerQueryController(AuctionSummaryRepository auctionRepo,
-                                  BidActivityRepository bidRepo,
+    public SellerQueryController(AuctionRepository auctionRepo,
+                                  BidRepository bidRepo,
                                   EnrichmentService enrichment) {
         this.auctionRepo = auctionRepo;
         this.bidRepo     = bidRepo;
@@ -36,22 +36,28 @@ public class SellerQueryController {
     public Page<EnrichedAuctionSummary> myAuctions(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(required = false) String status,
-            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
 
         PageRequest pageable = PageRequest.of(page, size, Sort.by("updatedAt").descending());
 
-        Page<AuctionSummary> auctions;
+        Page<Auction> auctions;
         if (status != null && !status.isBlank()) {
-            auctions = auctionRepo.findBySellerIdAndStatus(principal.userId(), status.toUpperCase(), pageable);
+            auctions = auctionRepo.findBySellerIdAndStatus(
+                    principal.userId(), status.toUpperCase(), pageable);
         } else {
             auctions = auctionRepo.findBySellerId(principal.userId(), pageable);
         }
         return enrichment.enrichAuctions(auctions);
     }
 
+    /**
+     * Returns all bidders on a given auction, each showing their highest bid,
+     * total bid count, and current status (WON / OUTBID / ACTIVE).
+     * Results are sorted by highest bid descending.
+     */
     @GetMapping("/auctions/{auctionId}/bids")
     public List<EnrichedBidActivity> auctionBids(@PathVariable String auctionId) {
-        return enrichment.enrichBidList(bidRepo.findByAuctionId(auctionId));
+        return enrichment.enrichBidList(bidRepo.findBidSummariesByAuctionId(auctionId));
     }
 }

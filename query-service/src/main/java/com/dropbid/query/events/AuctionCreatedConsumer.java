@@ -1,7 +1,7 @@
 package com.dropbid.query.events;
 
-import com.dropbid.query.model.AuctionSummary;
-import com.dropbid.query.repository.AuctionSummaryRepository;
+import com.dropbid.query.model.Auction;
+import com.dropbid.query.repository.AuctionRepository;
 import com.dropbid.shared.events.AuctionCreatedEvent;
 import com.dropbid.shared.streaming.ResilientStreamConsumer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,27 +13,38 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 
 /**
- * Consumes {@code auction:created} events and bootstraps the
- * {@code auction_summary} row with structural fields that {@code bid_placed}
- * events do not carry: endTime, quantity, startingBid, status.
+ * Consumes {@code auction:created} events and upserts the {@code auction} row
+ * with structural fields (endTime, quantity, startingBid, status, …) that
+ * {@code bid_placed} events do not carry.
  *
- * <p>Idempotency: the handler is safe to re-run.  On the first delivery it
- * creates the row; on redelivery it updates structural fields only, leaving
- * bidCount, lastBidId, and closedAt untouched so that any bid_placed events
- * already processed are not overwritten.
+ * <p>Published twice in the auction lifecycle:
+ * <ol>
+ *   <li>At creation — status is {@code OPEN} or {@code PENDING}</li>
+ *   <li>When a PENDING auction opens — status is {@code OPEN}</li>
+ * </ol>
+ *
+ * <p>Idempotency: the handler is safe to re-run.
+ * <ul>
+ *   <li>Structural fields are always overwritten with the authoritative event values.</li>
+ *   <li>{@code status} is only updated if the stored value is not already {@code CLOSED}
+ *       — prevents a late-arriving {@code auction:created} redelivery from reverting a
+ *       closed auction back to OPEN if {@code auction:closed} was already processed.</li>
+ *   <li>{@code currentHighest} is set to {@code startingBid} only for a brand-new row
+ *       (value == 0), so any bid events already processed are not overwritten.</li>
+ * </ul>
  */
 @Component
 public class AuctionCreatedConsumer extends ResilientStreamConsumer {
 
-    private final AuctionSummaryRepository auctionRepo;
-    private final ObjectMapper mapper;
+    private final AuctionRepository auctionRepo;
+    private final ObjectMapper      mapper;
 
     public AuctionCreatedConsumer(StringRedisTemplate redis,
-                                   AuctionSummaryRepository auctionRepo,
+                                   AuctionRepository auctionRepo,
                                    ObjectMapper mapper) {
         super(redis);
         this.auctionRepo = auctionRepo;
-        this.mapper = mapper;
+        this.mapper      = mapper;
     }
 
     @Override protected String stream()       { return "auction:created"; }
@@ -53,30 +64,34 @@ public class AuctionCreatedConsumer extends ResilientStreamConsumer {
 
     @Transactional
     public void handleAuctionCreated(AuctionCreatedEvent event) {
-        AuctionSummary summary = auctionRepo.findById(event.auctionId())
+        Auction auction = auctionRepo.findById(event.auctionId())
                 .orElseGet(() -> {
-                    AuctionSummary s = new AuctionSummary();
-                    s.setAuctionId(event.auctionId());
-                    return s;
+                    Auction a = new Auction();
+                    a.setAuctionId(event.auctionId());
+                    return a;
                 });
 
-        // Always sync structural fields from the authoritative auction:created event.
-        // bidCount, lastBidId, and closedAt are owned by bid_placed / auction:closed
-        // consumers and must not be reset here.
-        summary.setItemId(event.itemId());
-        summary.setShopId(event.shopId());
-        summary.setSellerId(event.sellerId());
-        summary.setStatus(event.status());
-        summary.setEndTime(event.endTime());
-        summary.setQuantity(event.quantity());
+        // Always sync structural fields from the authoritative event.
+        auction.setItemId(event.itemId());
+        auction.setShopId(event.shopId());
+        auction.setSellerId(event.sellerId());
+        auction.setStartingBid(event.startingBid());
+        auction.setStartTime(event.startTime());
+        auction.setEndTime(event.endTime());
+        auction.setQuantity(event.quantity());
 
-        // currentHighest starts at startingBid for a brand-new row;
-        // leave it alone on redelivery so existing bids are not overwritten.
-        if (summary.getCurrentHighest() == 0) {
-            summary.setCurrentHighest(event.startingBid());
+        // Never revert a CLOSED auction — auction:closed may have already arrived.
+        if (!"CLOSED".equals(auction.getStatus())) {
+            auction.setStatus(event.status());
         }
-        summary.setUpdatedAt(Instant.now());
 
-        auctionRepo.save(summary);
+        // Set the floor price as the starting point for currentHighest only on a
+        // brand-new row; leave it intact if bids have already been processed.
+        if (auction.getCurrentHighest() == 0) {
+            auction.setCurrentHighest(event.startingBid());
+        }
+
+        auction.setUpdatedAt(Instant.now());
+        auctionRepo.save(auction);
     }
 }

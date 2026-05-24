@@ -3,7 +3,13 @@
 > **Note**: These results were captured with the Redisson distributed lock still in place.
 > The lock has since been removed (see `docs/troubleshooting.md` #14). Post-optimization
 > results are expected to show significantly lower latency for Test 1 (single-auction hot path).
+>
 > bid-service has since been merged into auction-service; references to bid-service in the results below reflect the pre-consolidation state.
+>
+> The query-service schema has since been redesigned (see `docs/troubleshooting.md` #18):
+> `auction_summary` + `bid_activity` → `auction` + `bid` (append-only) + `auction_winner`.
+> The consistency checks in these results remain valid — the observable behaviour of the query
+> endpoints is unchanged; only the internal storage layout differs.
 
 Test environment: Docker Desktop (macOS, Apple Silicon), single-machine deployment, all services sharing CPU/memory.
 

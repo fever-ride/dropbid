@@ -1,9 +1,9 @@
 package com.dropbid.query.controller;
 
+import com.dropbid.query.dto.BidSummaryProjection;
 import com.dropbid.query.dto.EnrichedAuctionSummary;
 import com.dropbid.query.dto.EnrichedBidActivity;
-import com.dropbid.query.model.AuctionSummary;
-import com.dropbid.query.model.BidActivity;
+import com.dropbid.query.model.Auction;
 import com.dropbid.query.model.ItemLookup;
 import com.dropbid.query.model.UserLookup;
 import com.dropbid.query.repository.ItemLookupRepository;
@@ -39,7 +39,7 @@ public class EnrichmentService {
 
     private final UserLookupRepository userRepo;
     private final ItemLookupRepository itemRepo;
-    private final ObjectMapper mapper;
+    private final ObjectMapper         mapper;
 
     public EnrichmentService(UserLookupRepository userRepo,
                               ItemLookupRepository itemRepo,
@@ -49,33 +49,41 @@ public class EnrichmentService {
         this.mapper   = mapper;
     }
 
-    public Page<EnrichedBidActivity> enrichBids(Page<BidActivity> page) {
-        Set<String> userIds = page.getContent().stream().map(BidActivity::getBidderId).collect(Collectors.toSet());
-        Set<String> itemIds = page.getContent().stream().map(BidActivity::getItemId).collect(Collectors.toSet());
+    // ── Auction enrichment ───────────────────────────────────────────────────
 
-        Map<String, UserLookup> users = resolveUsers(userIds);
+    public Page<EnrichedAuctionSummary> enrichAuctions(Page<Auction> page) {
+        Set<String> itemIds = page.getContent().stream()
+                .map(Auction::getItemId).collect(Collectors.toSet());
         Map<String, ItemLookup> items = resolveItems(itemIds);
-
-        return page.map(ba -> EnrichedBidActivity.from(
-                ba, users.get(ba.getBidderId()), items.get(ba.getItemId())));
+        return page.map(a -> EnrichedAuctionSummary.from(a, items.get(a.getItemId())));
     }
 
-    public List<EnrichedBidActivity> enrichBidList(List<BidActivity> list) {
-        Set<String> userIds = list.stream().map(BidActivity::getBidderId).collect(Collectors.toSet());
-        Set<String> itemIds = list.stream().map(BidActivity::getItemId).collect(Collectors.toSet());
+    // ── Bid enrichment ───────────────────────────────────────────────────────
 
-        Map<String, UserLookup> users = resolveUsers(userIds);
-        Map<String, ItemLookup> items = resolveItems(itemIds);
+    public Page<EnrichedBidActivity> enrichBids(Page<BidSummaryProjection> page) {
+        Map<String, UserLookup> users = resolveUsers(collectBidderIds(page.getContent()));
+        Map<String, ItemLookup> items = resolveItems(collectItemIds(page.getContent()));
+        return page.map(p -> EnrichedBidActivity.from(
+                p, users.get(p.getBidderId()), items.get(p.getItemId())));
+    }
 
+    public List<EnrichedBidActivity> enrichBidList(List<BidSummaryProjection> list) {
+        Map<String, UserLookup> users = resolveUsers(collectBidderIds(list));
+        Map<String, ItemLookup> items = resolveItems(collectItemIds(list));
         return list.stream()
-                .map(ba -> EnrichedBidActivity.from(ba, users.get(ba.getBidderId()), items.get(ba.getItemId())))
+                .map(p -> EnrichedBidActivity.from(
+                        p, users.get(p.getBidderId()), items.get(p.getItemId())))
                 .toList();
     }
 
-    public Page<EnrichedAuctionSummary> enrichAuctions(Page<AuctionSummary> page) {
-        Set<String> itemIds = page.getContent().stream().map(AuctionSummary::getItemId).collect(Collectors.toSet());
-        Map<String, ItemLookup> items = resolveItems(itemIds);
-        return page.map(s -> EnrichedAuctionSummary.from(s, items.get(s.getItemId())));
+    // ── Lookup helpers ───────────────────────────────────────────────────────
+
+    private static Set<String> collectBidderIds(List<BidSummaryProjection> list) {
+        return list.stream().map(BidSummaryProjection::getBidderId).collect(Collectors.toSet());
+    }
+
+    private static Set<String> collectItemIds(List<BidSummaryProjection> list) {
+        return list.stream().map(BidSummaryProjection::getItemId).collect(Collectors.toSet());
     }
 
     private Map<String, UserLookup> resolveUsers(Set<String> userIds) {
@@ -84,7 +92,6 @@ public class EnrichmentService {
 
         Set<String> missing = new HashSet<>(userIds);
         missing.removeAll(found.keySet());
-
         for (String userId : missing) {
             UserLookup fetched = fetchUserFallback(userId);
             if (fetched != null) found.put(userId, fetched);
@@ -98,7 +105,6 @@ public class EnrichmentService {
 
         Set<String> missing = new HashSet<>(itemIds);
         missing.removeAll(found.keySet());
-
         for (String itemId : missing) {
             ItemLookup fetched = fetchItemFallback(itemId);
             if (fetched != null) found.put(itemId, fetched);

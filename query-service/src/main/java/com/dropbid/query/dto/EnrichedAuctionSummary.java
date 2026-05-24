@@ -1,38 +1,44 @@
 package com.dropbid.query.dto;
 
-import com.dropbid.query.model.AuctionSummary;
+import com.dropbid.query.model.Auction;
 import com.dropbid.query.model.ItemLookup;
 
 import java.time.Instant;
 
 public record EnrichedAuctionSummary(
-        String auctionId,
-        String itemId,
-        String itemTitle,
-        String itemImageUrl,
-        String itemSeries,
-        String shopId,
-        String sellerId,
-        String status,
-        long currentHighest,
-        long bidCount,
+        String  auctionId,
+        String  itemId,
+        String  itemTitle,
+        String  itemImageUrl,
+        String  itemSeries,
+        String  shopId,
+        String  sellerId,
+        String  status,
+        long    startingBid,
+        long    currentHighest,
+        long    bidCount,
+        String  endTime,
+        Long    quantity,
         Instant closedAt,
         Instant updatedAt
 ) {
-    public static EnrichedAuctionSummary from(AuctionSummary s, ItemLookup item) {
+    public static EnrichedAuctionSummary from(Auction a, ItemLookup item) {
         return new EnrichedAuctionSummary(
-                s.getAuctionId(),
-                s.getItemId(),
-                item != null ? item.getTitle() : null,
+                a.getAuctionId(),
+                a.getItemId(),
+                item != null ? item.getTitle()    : null,
                 item != null ? item.getImageUrl() : null,
-                item != null ? item.getSeries() : null,
-                s.getShopId(),
-                s.getSellerId(),
-                s.getStatus(),
-                s.getCurrentHighest(),
-                s.getBidCount(),
-                s.getClosedAt(),
-                s.getUpdatedAt()
+                item != null ? item.getSeries()   : null,
+                a.getShopId(),
+                a.getSellerId(),
+                a.getStatus(),
+                a.getStartingBid(),
+                a.getCurrentHighest(),
+                a.getBidCount(),
+                a.getEndTime(),
+                a.getQuantity(),
+                a.getClosedAt(),
+                a.getUpdatedAt()
         );
     }
 }

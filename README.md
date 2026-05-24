@@ -270,10 +270,23 @@ Query service provides cross-service read queries that would otherwise require A
 
 | Table | Granularity | Updated By |
 |-------|-------------|------------|
-| `auction_summary` | One row per auction | `bid_placed`, `auction:closed` |
-| `bid_activity` | One row per (auction, bidder) | `bid_placed`, `auction:closed`, `payment:*` |
+| `auction` | One row per auction — structural fields + stored `bidCount`/`currentHighest` | `auction:created`, `bid_placed`, `auction:closed` |
+| `bid` | One row per accepted bid (append-only) | `bid_placed` |
+| `auction_winner` | One row per winner per auction — holds payment status | `auction:closed`, `payment:*` |
 | `user_lookup` | One row per user | `user:updated` |
 | `item_lookup` | One row per item | `item:updated` |
+
+**Design rationale**: `bid` is append-only with `bidId` as primary key — idempotency is a single `existsById` check, no aggregation state to maintain. Per-bidder aggregates (`latestAmount`, `bidCount`, bid status) are computed at query time via native SQL `GROUP BY` over the `bid` table, eliminating the complex merge logic that an aggregated table would require. `bidCount` and `currentHighest` are stored redundantly on `auction` only to support fast `ORDER BY` on the public listing endpoint without a `GROUP BY` aggregation per page request.
+
+### Bid Status Derivation
+
+Bid status is never stored in the `bid` table — it is derived at query time:
+
+| Status | Condition |
+|--------|-----------|
+| `WON` | A row exists in `auction_winner` for this `(auctionId, bidderId)` |
+| `OUTBID` | Auction is `CLOSED` and no `auction_winner` row exists for this pair |
+| `ACTIVE` | Auction is still `OPEN` |
 
 ### Endpoints
 
@@ -281,7 +294,7 @@ Query service provides cross-service read queries that would otherwise require A
 |----------|-------------|------|
 | `GET /query/my/bids?status=WON&page=0&size=20` | Buyer's bid history with item names and images | BUYER |
 | `GET /query/seller/auctions?status=CLOSED` | Seller's auction list with item details | SELLER |
-| `GET /query/seller/auctions/{id}/bids` | All bids on a seller's auction with bidder names | SELLER |
+| `GET /query/seller/auctions/{id}/bids` | All bidders on a seller's auction with per-bidder stats | SELLER |
 | `GET /query/auctions?sort=bidCount&status=OPEN` | Public auction listing with item details | None |
 
 ### Data Enrichment

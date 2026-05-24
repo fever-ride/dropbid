@@ -3,7 +3,13 @@
 > **Note**: This plan was written when `PessimisticStrategy` still used a Redisson distributed lock.
 > The lock has since been removed (see `docs/troubleshooting.md` #14). References to "lock contention"
 > below describe the pre-optimization state. The test scenarios and consistency checks remain valid.
+>
 > bid-service has since been merged into auction-service; references to bid-service below reflect the pre-consolidation state.
+>
+> The query-service schema has since been redesigned (see `docs/troubleshooting.md` #18). The old
+> `auction_summary` and `bid_activity` tables have been replaced by `auction`, `bid` (append-only),
+> and `auction_winner`. Consistency checks referencing query-service read state remain valid — only
+> the underlying table names differ.
 
 ## Goals
 
