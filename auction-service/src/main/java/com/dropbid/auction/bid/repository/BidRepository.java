@@ -1,6 +1,6 @@
-package com.dropbid.bid.repository;
+package com.dropbid.auction.bid.repository;
 
-import com.dropbid.bid.model.Bid;
+import com.dropbid.auction.bid.model.Bid;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.enhanced.dynamodb.*;
 import software.amazon.awssdk.enhanced.dynamodb.model.*;
@@ -10,9 +10,9 @@ import java.util.List;
 @Repository
 public class BidRepository implements BidStore {
 
-    private static final String TABLE_NAME     = "Bids";
-    private static final String AUCTION_INDEX  = "auction-index";
-    private static final String BIDDER_INDEX   = "bidder-index";
+    private static final String TABLE_NAME    = "Bids";
+    private static final String AUCTION_INDEX = "auction-index";
+    private static final String BIDDER_INDEX  = "bidder-index";
 
     private final DynamoDbTable<Bid> table;
 

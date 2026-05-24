@@ -11,7 +11,6 @@ set -euo pipefail
 USER_SVC="http://localhost:8082"
 SHOP_SVC="http://localhost:8083"
 AUCTION_SVC="http://localhost:8081"
-BID_SVC="http://localhost:8084"
 PAYMENT_SVC="http://localhost:8085"
 
 RESULTS_DIR="loadtest/results"
@@ -277,20 +276,20 @@ verify_consistency() {
       fi
     fi
 
-    # ── Check 4: bid-service records exist ──
-    local bid_svc_count
-    bid_svc_count=$(curl -sf "$BID_SVC/bids/auction/$aid" \
+    # ── Check 4: bid history records exist ──
+    local bid_history_count
+    bid_history_count=$(curl -sf "$AUCTION_SVC/auctions/$aid/bids" \
       -H "Authorization: Bearer $token" 2>/dev/null | \
       python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 
-    if [[ "$bid_svc_count" -gt 0 ]]; then
-      echo "    [PASS] bid-service has $bid_svc_count records"
+    if [[ "$bid_history_count" -gt 0 ]]; then
+      echo "    [PASS] bid history has $bid_history_count records"
       ((pass++)) || true
     else
       if [[ "$dynamo_bid_count" -gt 0 ]]; then
-        echo "    [WARN] bid-service has 0 records but DynamoDB bidCount=$dynamo_bid_count (consumer lag?)"
+        echo "    [WARN] bid history has 0 records but DynamoDB bidCount=$dynamo_bid_count"
       else
-        echo "    [PASS] bid-service has 0 records (no bids placed)"
+        echo "    [PASS] bid history has 0 records (no bids placed)"
         ((pass++)) || true || true
       fi
     fi
@@ -391,22 +390,25 @@ verify_post_close() {
       ((fail++)) || true
     fi
 
-    # Bid-service: winners should be marked WON
-    local won_count
-    won_count=$(curl -sf "$BID_SVC/bids/auction/$aid" \
+    # Bid history: records should exist for auctions that had bids
+    local bid_history_count
+    bid_history_count=$(curl -sf "$AUCTION_SVC/auctions/$aid/bids" \
       -H "Authorization: Bearer $token" 2>/dev/null | \
-      python3 -c "import sys,json; print(len([b for b in json.load(sys.stdin) if b.get('status')=='WON']))" 2>/dev/null || echo "0")
+      python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 
-    local active_count
-    active_count=$(curl -sf "$BID_SVC/bids/auction/$aid" \
+    local dynamo_bid_count_inner
+    dynamo_bid_count_inner=$(curl -sf "$AUCTION_SVC/auctions/$aid" \
       -H "Authorization: Bearer $token" 2>/dev/null | \
-      python3 -c "import sys,json; print(len([b for b in json.load(sys.stdin) if b.get('status')=='ACTIVE']))" 2>/dev/null || echo "0")
+      python3 -c "import sys,json; print(json.load(sys.stdin).get('bidCount',0))" 2>/dev/null || echo "0")
 
-    if [[ "$active_count" -eq 0 ]]; then
-      echo "    [PASS] no ACTIVE bids remain after close (WON=$won_count)"
+    if [[ "$dynamo_bid_count_inner" -gt 0 && "$bid_history_count" -gt 0 ]]; then
+      echo "    [PASS] bid history has $bid_history_count records"
+      ((pass++)) || true
+    elif [[ "$dynamo_bid_count_inner" -eq 0 ]]; then
+      echo "    [PASS] no bids placed, bid history empty"
       ((pass++)) || true
     else
-      echo "    [FAIL] $active_count bids still ACTIVE after close"
+      echo "    [FAIL] bid history empty but bidCount=$dynamo_bid_count_inner"
       ((fail++)) || true
     fi
   done

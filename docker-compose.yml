@@ -143,27 +143,6 @@ services:
       retries: 10
       start_period: 30s
 
-  bid-service:
-    build:
-      context: .
-      dockerfile: bid-service/Dockerfile
-    ports:
-      - "8084:8084"
-    environment:
-      AWS_ENDPOINT_OVERRIDE: http://dynamodb-local:8000
-      AWS_ACCESS_KEY_ID: dummy
-      AWS_SECRET_ACCESS_KEY: dummy
-      AWS_REGION: us-east-1
-      SPRING_REDIS_HOST: redis
-      SPRING_REDIS_PORT: 6379
-      JWT_SECRET: dev-secret-change-in-production
-      SERVER_PORT: 8084
-    depends_on:
-      init-dynamo:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-
   notification-service:
     build:
       context: .

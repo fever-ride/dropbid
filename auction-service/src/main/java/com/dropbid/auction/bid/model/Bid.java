@@ -1,4 +1,4 @@
-package com.dropbid.bid.model;
+package com.dropbid.auction.bid.model;
 
 import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.*;
 

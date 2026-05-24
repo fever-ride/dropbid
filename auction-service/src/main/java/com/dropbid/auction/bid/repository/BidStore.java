@@ -1,6 +1,6 @@
-package com.dropbid.bid.repository;
+package com.dropbid.auction.bid.repository;
 
-import com.dropbid.bid.model.Bid;
+import com.dropbid.auction.bid.model.Bid;
 
 import java.util.List;
 

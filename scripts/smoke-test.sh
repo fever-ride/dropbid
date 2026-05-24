@@ -12,7 +12,6 @@ set -euo pipefail
 USER_SVC="http://localhost:8082"
 SHOP_SVC="http://localhost:8083"
 AUCTION_SVC="http://localhost:8081"
-BID_SVC="http://localhost:8084"
 PAYMENT_SVC="http://localhost:8085"
 
 PASS=0
@@ -130,7 +129,7 @@ assert_field "bid placement" "amount" "$BID_BODY"
 echo ""
 echo "=== 7. Bid History ==="
 sleep 1  # allow async event processing
-BID_LIST=$(curl -sf "$BID_SVC/bids/auction/$AUCTION_ID" \
+BID_LIST=$(curl -sf "$AUCTION_SVC/auctions/$AUCTION_ID/bids" \
   -H "Authorization: Bearer $BUYER_TOKEN" || echo '[]')
 BID_COUNT=$(echo "$BID_LIST" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 if [[ "$BID_COUNT" -ge 1 ]]; then

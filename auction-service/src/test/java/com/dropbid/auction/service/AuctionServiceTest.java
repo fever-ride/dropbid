@@ -1,5 +1,6 @@
 package com.dropbid.auction.service;
 
+import com.dropbid.auction.bid.repository.BidStore;
 import com.dropbid.auction.concurrency.BidResult;
 import com.dropbid.auction.concurrency.BidStrategy;
 import com.dropbid.auction.concurrency.StrategyManager;
@@ -26,6 +27,7 @@ class AuctionServiceTest {
 
     private List<Auction> store;
     private AuctionStore repo;
+    private BidStore bidStore;
     private StringRedisTemplate redis;
     private RedissonClient redisson;
     private AuctionEventPublisher publisher;
@@ -63,8 +65,9 @@ class AuctionServiceTest {
 
         publisher = mock(AuctionEventPublisher.class);
         strategyManager = mock(StrategyManager.class);
+        bidStore = mock(BidStore.class);
 
-        service = new AuctionService(repo, redis, redisson, publisher, strategyManager);
+        service = new AuctionService(repo, bidStore, redis, redisson, publisher, strategyManager);
     }
 
     // ── createAuction validation ────────────────────────────────────────────

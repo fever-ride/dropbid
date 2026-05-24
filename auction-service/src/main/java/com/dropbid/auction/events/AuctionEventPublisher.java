@@ -16,8 +16,9 @@ import java.util.Map;
 /**
  * Publishes auction domain events to Redis Streams.
  *
- *  bid_placed     → consumed by Bid Service + Notification Service
- *  auction:closed → consumed by Payment Service
+ *  bid_placed     → consumed by Notification Service
+ *                   (bid history written directly in AuctionService)
+ *  auction:closed → consumed by Payment Service + Query Service
  */
 @Component
 public class AuctionEventPublisher {

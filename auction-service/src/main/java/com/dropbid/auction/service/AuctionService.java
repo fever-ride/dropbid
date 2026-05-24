@@ -1,5 +1,7 @@
 package com.dropbid.auction.service;
 
+import com.dropbid.auction.bid.model.Bid;
+import com.dropbid.auction.bid.repository.BidStore;
 import com.dropbid.auction.concurrency.BidResult;
 import com.dropbid.auction.concurrency.BidStrategy;
 import com.dropbid.auction.concurrency.StrategyManager;
@@ -39,17 +41,20 @@ public class AuctionService {
     private static final Duration NULL_TTL    = Duration.ofSeconds(60);
 
     private final AuctionStore           repo;
+    private final BidStore               bidStore;
     private final StringRedisTemplate   redis;
     private final RedissonClient        redisson;
     private final AuctionEventPublisher publisher;
     private final StrategyManager       strategyManager;
 
     public AuctionService(AuctionStore repo,
+                          BidStore bidStore,
                           StringRedisTemplate redis,
                           RedissonClient redisson,
                           AuctionEventPublisher publisher,
                           StrategyManager strategyManager) {
         this.repo            = repo;
+        this.bidStore        = bidStore;
         this.redis           = redis;
         this.redisson        = redisson;
         this.publisher       = publisher;
@@ -162,14 +167,24 @@ public class AuctionService {
             }
         });
 
-        // Publish event for Bid + Notification services (read itemId/sellerId from Redis)
+        // Publish event for Notification service (read itemId/sellerId from Redis)
         String itemId = (String) redis.opsForHash().get("auction:" + auctionId, "item_id");
         String bidId = IdGenerator.newId();
+        String bidTime = Instant.now().toString();
         publisher.publishBidPlaced(new BidPlacedEvent(
                 auctionId, bidId, itemId, sellerId,
                 bidderId, amount, result.previousHighest(), result.previousBidder(),
-                Instant.now().toString(), Instant.now().toString()
+                bidTime, bidTime
         ));
+
+        // Synchronous bid history recording — must complete before returning so that
+        // any post-close read of the Bids table sees a complete set of records.
+        try {
+            recordBidHistory(auctionId, bidId, bidderId, amount, result.previousBidder(), bidTime);
+        } catch (Exception e) {
+            // Bid is already accepted in Redis; log and continue — audit trail will have a gap.
+            log.warn("bid history write failed for auction {}: {}", auctionId, e.getMessage());
+        }
 
         return result;
     }
@@ -321,6 +336,38 @@ public class AuctionService {
         // max_price stored separately — Map.of() has a 10-entry limit
         redis.opsForHash().put(key, "max_price",
                 String.valueOf(a.getMaxPrice() != null ? a.getMaxPrice() : 0L));
+    }
+
+    // ── Bid history helpers ──────────────────────────────────────────────────
+
+    private void recordBidHistory(String auctionId, String bidId, String bidderId,
+                                  long amount, String previousBidder, String bidTime) {
+        // Invalidate this bidder's own previous ACTIVE bids (self-raise scenario)
+        markBidsOutbid(auctionId, bidderId);
+        // Invalidate the knocked-out previous bidder (only if a different person)
+        if (previousBidder != null && !previousBidder.isBlank() && !previousBidder.equals(bidderId)) {
+            markBidsOutbid(auctionId, previousBidder);
+        }
+        Bid bid = new Bid();
+        bid.setBidId(bidId);
+        bid.setAuctionId(auctionId);
+        bid.setBidderId(bidderId);
+        bid.setAmount(amount);
+        bid.setStatus("ACTIVE");
+        bid.setCreatedAt(bidTime);
+        bidStore.save(bid);
+        log.debug("recorded bid {} auction={} bidder={} amount={}", bidId, auctionId, bidderId, amount);
+    }
+
+    private void markBidsOutbid(String auctionId, String bidderId) {
+        // Use bidder-index to scope the scan to this bidder's bids only,
+        // rather than reading the entire auction's bid list.
+        bidStore.findByBidderId(bidderId).stream()
+                .filter(b -> b.getAuctionId().equals(auctionId) && "ACTIVE".equals(b.getStatus()))
+                .forEach(b -> {
+                    b.setStatus("OUTBID");
+                    bidStore.update(b);
+                });
     }
 
     /** Returns true if the auction's endTime is in the past. */
