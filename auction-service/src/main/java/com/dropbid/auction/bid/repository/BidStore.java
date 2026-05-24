@@ -9,5 +9,4 @@ public interface BidStore {
     Bid findById(String bidId);
     List<Bid> findByAuctionId(String auctionId);
     List<Bid> findByBidderId(String bidderId);
-    void update(Bid bid);
 }

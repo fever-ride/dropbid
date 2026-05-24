@@ -54,10 +54,4 @@ public class BidRepository implements BidStore {
                 .toList();
     }
 
-    public void update(Bid bid) {
-        table.updateItem(UpdateItemEnhancedRequest.builder(Bid.class)
-                .item(bid)
-                .ignoreNulls(true)
-                .build());
-    }
 }

@@ -9,7 +9,6 @@ public class Bid {
     private String auctionId;
     private String bidderId;
     private Long   amount;
-    private String status;    // ACTIVE | OUTBID | WON
     private String createdAt; // ISO-8601
 
     @DynamoDbPartitionKey
@@ -27,9 +26,6 @@ public class Bid {
 
     public Long getAmount()              { return amount; }
     public void setAmount(Long amount)   { this.amount = amount; }
-
-    public String getStatus()                { return status; }
-    public void setStatus(String status)     { this.status = status; }
 
     @DynamoDbSecondarySortKey(indexNames = {"auction-index", "bidder-index"})
     public String getCreatedAt()                 { return createdAt; }

@@ -177,14 +177,16 @@ public class AuctionService {
                 bidTime, bidTime
         ));
 
-        // Synchronous bid history recording — must complete before returning so that
-        // any post-close read of the Bids table sees a complete set of records.
-        try {
-            recordBidHistory(auctionId, bidId, bidderId, amount, result.previousBidder(), bidTime);
-        } catch (Exception e) {
-            // Bid is already accepted in Redis; log and continue — audit trail will have a gap.
-            log.warn("bid history write failed for auction {}: {}", auctionId, e.getMessage());
-        }
+        // Async bid history recording — append-only insert, no updates ever.
+        // Status (WINNING / OUTBID) is derived at read time from the live winners set,
+        // so no status field needs to be written or updated here.
+        CompletableFuture.runAsync(() -> {
+            try {
+                recordBidHistory(auctionId, bidId, bidderId, amount, bidTime);
+            } catch (Exception e) {
+                log.warn("bid history write failed for auction {}: {}", auctionId, e.getMessage());
+            }
+        });
 
         return result;
     }
@@ -340,34 +342,21 @@ public class AuctionService {
 
     // ── Bid history helpers ──────────────────────────────────────────────────
 
+    /**
+     * Appends an immutable bid record to the Bids table.
+     * No status field — WINNING / OUTBID is derived at read time by cross-referencing
+     * the auction's live winners set (Redis) or final winners snapshot (DynamoDB).
+     */
     private void recordBidHistory(String auctionId, String bidId, String bidderId,
-                                  long amount, String previousBidder, String bidTime) {
-        // Invalidate this bidder's own previous ACTIVE bids (self-raise scenario)
-        markBidsOutbid(auctionId, bidderId);
-        // Invalidate the knocked-out previous bidder (only if a different person)
-        if (previousBidder != null && !previousBidder.isBlank() && !previousBidder.equals(bidderId)) {
-            markBidsOutbid(auctionId, previousBidder);
-        }
+                                  long amount, String bidTime) {
         Bid bid = new Bid();
         bid.setBidId(bidId);
         bid.setAuctionId(auctionId);
         bid.setBidderId(bidderId);
         bid.setAmount(amount);
-        bid.setStatus("ACTIVE");
         bid.setCreatedAt(bidTime);
         bidStore.save(bid);
         log.debug("recorded bid {} auction={} bidder={} amount={}", bidId, auctionId, bidderId, amount);
-    }
-
-    private void markBidsOutbid(String auctionId, String bidderId) {
-        // Use bidder-index to scope the scan to this bidder's bids only,
-        // rather than reading the entire auction's bid list.
-        bidStore.findByBidderId(bidderId).stream()
-                .filter(b -> b.getAuctionId().equals(auctionId) && "ACTIVE".equals(b.getStatus()))
-                .forEach(b -> {
-                    b.setStatus("OUTBID");
-                    bidStore.update(b);
-                });
     }
 
     /** Returns true if the auction's endTime is in the past. */
