@@ -1,6 +1,7 @@
 package com.dropbid.auction.events;
 
 import com.dropbid.shared.events.AuctionClosedEvent;
+import com.dropbid.shared.events.AuctionCreatedEvent;
 import com.dropbid.shared.events.BidPlacedEvent;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,16 +17,18 @@ import java.util.Map;
 /**
  * Publishes auction domain events to Redis Streams.
  *
- *  bid_placed     → consumed by Notification Service
- *                   (bid history written directly in AuctionService)
- *  auction:closed → consumed by Payment Service + Query Service
+ *  auction:created → consumed by Query Service (bootstrap auction_summary row)
+ *  bid_placed      → consumed by Query Service + Notification Service
+ *                    (bid history written directly in AuctionService)
+ *  auction:closed  → consumed by Payment Service + Query Service
  */
 @Component
 public class AuctionEventPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(AuctionEventPublisher.class);
-    private static final String STREAM_BID_PLACED     = "bid_placed";
-    private static final String STREAM_AUCTION_CLOSED = "auction:closed";
+    private static final String STREAM_BID_PLACED      = "bid_placed";
+    private static final String STREAM_AUCTION_CREATED = "auction:created";
+    private static final String STREAM_AUCTION_CLOSED  = "auction:closed";
 
     private final StringRedisTemplate redis;
     private final ObjectMapper mapper;
@@ -37,6 +40,10 @@ public class AuctionEventPublisher {
 
     public void publishBidPlaced(BidPlacedEvent event) {
         publish(STREAM_BID_PLACED, event);
+    }
+
+    public void publishAuctionCreated(AuctionCreatedEvent event) {
+        publish(STREAM_AUCTION_CREATED, event);
     }
 
     public void publishAuctionClosed(AuctionClosedEvent event) {

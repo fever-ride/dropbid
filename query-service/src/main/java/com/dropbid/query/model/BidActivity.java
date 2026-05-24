@@ -6,7 +6,14 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "bid_activity",
-       uniqueConstraints = @UniqueConstraint(columnNames = {"auctionId", "bidderId"}))
+       uniqueConstraints = @UniqueConstraint(columnNames = {"auctionId", "bidderId"}),
+       indexes = {
+               // buyer dashboard: all bids by a user, optionally filtered by status
+               @Index(name = "idx_ba_bidder",             columnList = "bidderId"),
+               @Index(name = "idx_ba_bidder_status",      columnList = "bidderId, bidStatus"),
+               // seller dashboard: all bids on one auction
+               @Index(name = "idx_ba_auction",            columnList = "auctionId")
+       })
 public class BidActivity {
 
     @Id

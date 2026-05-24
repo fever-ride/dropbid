@@ -67,16 +67,46 @@ public abstract class ResilientStreamConsumer {
                         StreamOffset.create(stream(), ReadOffset.lastConsumed())
                 );
                 if (records == null || records.isEmpty()) continue;
-
-                for (MapRecord<String, Object, Object> record : records) {
-                    processWithAck(record);
-                }
+                processBatchWithAck(records);
             } catch (Exception e) {
                 log.error("[{}] consume loop error: {}", consumerName(), e.getMessage(), e);
                 try { Thread.sleep(1000); } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                 }
             }
+        }
+    }
+
+    /**
+     * Processes a batch of records by calling {@link #handleBatch}, then ACKs all
+     * of them in one shot.  On failure, falls back to per-message processing so
+     * that successfully processed messages still get ACKed and only the failing
+     * one stays in the PEL for reclaim.
+     */
+    private void processBatchWithAck(List<MapRecord<String, Object, Object>> records) {
+        try {
+            handleBatch(records);
+            String[] ids = records.stream()
+                    .map(r -> r.getId().getValue())
+                    .toArray(String[]::new);
+            redis.opsForStream().acknowledge(stream(), group(), ids);
+        } catch (Exception e) {
+            log.error("[{}] batch handler failed ({}), falling back to per-message processing",
+                    consumerName(), e.getMessage());
+            for (MapRecord<String, Object, Object> record : records) {
+                processWithAck(record);
+            }
+        }
+    }
+
+    /**
+     * Override to process a full batch in one transaction / bulk DB call.
+     * Default implementation delegates to {@link #handleMessage} one-by-one
+     * (backward compatible with all existing consumers).
+     */
+    protected void handleBatch(List<MapRecord<String, Object, Object>> records) {
+        for (MapRecord<String, Object, Object> record : records) {
+            handleMessage(record);
         }
     }
 

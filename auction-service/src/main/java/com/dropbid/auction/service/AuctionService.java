@@ -9,6 +9,7 @@ import com.dropbid.auction.events.AuctionEventPublisher;
 import com.dropbid.auction.model.Auction;
 import com.dropbid.auction.repository.AuctionStore;
 import com.dropbid.shared.events.AuctionClosedEvent;
+import com.dropbid.shared.events.AuctionCreatedEvent;
 import com.dropbid.shared.events.BidPlacedEvent;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
@@ -118,6 +119,18 @@ public class AuctionService {
         redis.opsForZSet().add(SCHEDULE_CLOSE, auctionId,
                 end.toEpochMilli());
 
+        publisher.publishAuctionCreated(new AuctionCreatedEvent(
+                auction.getAuctionId(),
+                auction.getItemId(),
+                auction.getShopId(),
+                auction.getSellerId(),
+                auction.getStartingBid(),
+                auction.getStatus(),
+                auction.getStartTime(),
+                auction.getEndTime(),
+                auction.getQuantity()
+        ));
+
         log.info("created auction {} item={} status={}", auctionId, itemId, auction.getStatus());
         return auction;
     }
@@ -211,6 +224,21 @@ public class AuctionService {
         seedRedisCache(auction);
         redis.opsForZSet().remove(SCHEDULE_OPEN, auctionId);
 
+        // Notify Query Service so auction_summary.status transitions PENDING → OPEN.
+        // Reuses AuctionCreatedEvent — the consumer does an upsert and only updates
+        // structural fields, so bidCount and lastBidId are not affected.
+        publisher.publishAuctionCreated(new AuctionCreatedEvent(
+                auction.getAuctionId(),
+                auction.getItemId(),
+                auction.getShopId(),
+                auction.getSellerId(),
+                auction.getStartingBid(),
+                "OPEN",
+                auction.getStartTime(),
+                auction.getEndTime(),
+                auction.getQuantity()
+        ));
+
         log.info("opened auction {} item={}", auctionId, auction.getItemId());
     }
 
@@ -254,19 +282,20 @@ public class AuctionService {
         }
 
         // ── 2. Publish event BEFORE marking closed ──────────────────────────
+        // Always publish — even for no-bid auctions — so Query Service can
+        // transition auction_summary.status to CLOSED.
         // If publish fails, status stays OPEN and the scheduler retries next tick.
         // If publish succeeds but the update below fails, downstream gets a
         // duplicate event on retry — consumers must be idempotent (they are,
         // via Redis Streams consumer-group ack).
-        if (!winners.isEmpty()) {
-            log.info("closed auction {} winners={}", auctionId, winners);
-            publisher.publishAuctionClosed(new AuctionClosedEvent(
-                    auctionId, winners, auction.getItemId(),
-                    auction.getShopId(), Instant.now().toString()
-            ));
-        } else {
-            log.info("closed auction {} with no bids", auctionId);
-        }
+        publisher.publishAuctionClosed(new AuctionClosedEvent(
+                auctionId,
+                winners.isEmpty() ? null : winners,
+                auction.getItemId(),
+                auction.getShopId(),
+                Instant.now().toString()
+        ));
+        log.info("closed auction {} winners={}", auctionId, winners.isEmpty() ? "none" : winners);
 
         // ── 3. Mark CLOSED in DynamoDB and clean up Redis ───────────────────
         // Persist the authoritative winners so that BidController.resolveWinners()

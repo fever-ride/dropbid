@@ -13,8 +13,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 @Component
 public class AuctionClosedConsumer extends ResilientStreamConsumer {
@@ -65,22 +65,18 @@ public class AuctionClosedConsumer extends ResilientStreamConsumer {
         summary.setUpdatedAt(now);
         auctionRepo.save(summary);
 
-        List<String> winnerIds = new ArrayList<>(event.winners().keySet());
-        List<BidActivity> winnerActivities = bidRepo.findByAuctionIdAndBidderIdIn(
-                event.auctionId(), winnerIds);
-        for (BidActivity ba : winnerActivities) {
-            ba.setBidStatus("WON");
-            ba.setUpdatedAt(now);
-        }
-        bidRepo.saveAll(winnerActivities);
+        // Single pass: load all bid activities once, mark WON or OUTBID, save once.
+        // Guard against null winners (no-bid auction closure).
+        Set<String> winnerIds = (event.winners() != null)
+                ? event.winners().keySet() : Set.of();
 
         List<BidActivity> allBids = bidRepo.findByAuctionId(event.auctionId());
         for (BidActivity ba : allBids) {
-            if (!"WON".equals(ba.getBidStatus())) {
-                ba.setBidStatus("OUTBID");
-                ba.setUpdatedAt(now);
-            }
+            ba.setBidStatus(winnerIds.contains(ba.getBidderId()) ? "WON" : "OUTBID");
+            ba.setUpdatedAt(now);
         }
-        bidRepo.saveAll(allBids);
+        if (!allBids.isEmpty()) {
+            bidRepo.saveAll(allBids);
+        }
     }
 }

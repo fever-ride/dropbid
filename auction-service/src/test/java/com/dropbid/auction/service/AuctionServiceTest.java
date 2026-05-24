@@ -201,6 +201,27 @@ class AuctionServiceTest {
 
     // ── openAuction ─────────────────────────────────────────────────────────
 
+    /**
+     * Bug-2 regression: seedRedisCache must repopulate the winners ZSET from the
+     * DynamoDB snapshot.  Without this, a Redis restart mid-auction causes the Lua
+     * script to see an empty ZSET and accept bids below the real floor price.
+     */
+    @Test
+    void openAuction_restoresWinnersZsetFromDynamoSnapshot() {
+        String start = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        String end   = Instant.now().plus(2, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, start, end, 3);
+
+        // Simulate a DynamoDB snapshot that already has two winners (e.g. state before Redis restart)
+        a.setWinners(Map.of("buyerA", 15000L, "buyerB", 12000L));
+
+        service.openAuction(a.getAuctionId());
+
+        String expectedWinnersKey = "auction:" + a.getAuctionId() + ":winners";
+        verify(redis.opsForZSet()).add(expectedWinnersKey, "buyerA", 15000.0);
+        verify(redis.opsForZSet()).add(expectedWinnersKey, "buyerB", 12000.0);
+    }
+
     @Test
     void openAuction_pendingAuction_becomesOpen() {
         String end = Instant.now().plus(2, ChronoUnit.HOURS).toString();
@@ -245,6 +266,30 @@ class AuctionServiceTest {
         service.closeAuction(a.getAuctionId());
 
         assertEquals("CLOSED", a.getStatus());
+    }
+
+    /**
+     * Bug-1 regression: closeAuction must write the authoritative winners back to
+     * the DynamoDB record so that BidController.resolveWinners() returns correct
+     * data after the Redis keys have been deleted.
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    void closeAuction_persistsWinnersToAuctionRecord() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 1);
+
+        ZSetOperations.TypedTuple<String> tuple = mock(ZSetOperations.TypedTuple.class);
+        when(tuple.getValue()).thenReturn("buyerA");
+        when(tuple.getScore()).thenReturn(15000.0);
+        when(redis.opsForZSet().rangeWithScores(anyString(), anyLong(), anyLong()))
+                .thenReturn(Set.of(tuple));
+
+        service.closeAuction(a.getAuctionId());
+
+        assertEquals("CLOSED", a.getStatus());
+        assertNotNull(a.getWinners(), "winners must be persisted so the closed auction record is authoritative");
+        assertEquals(15000L, a.getWinners().get("buyerA"));
     }
 
     @Test
