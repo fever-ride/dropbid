@@ -100,10 +100,15 @@ public class AuctionService {
         } else {
             auction.setStatus("OPEN");
             auction.setStartTime(Instant.now().toString());
-            seedRedisCache(auction);
         }
 
+        // Persist to DynamoDB first — seedRedisCache must come after so that a
+        // DynamoDB failure does not leave a ghost auction in Redis with no recovery record.
         repo.save(auction);
+
+        if (!scheduled) {
+            seedRedisCache(auction);
+        }
 
         String auctionId = auction.getAuctionId();
         if (scheduled) {
@@ -264,7 +269,10 @@ public class AuctionService {
         }
 
         // ── 3. Mark CLOSED in DynamoDB and clean up Redis ───────────────────
+        // Persist the authoritative winners so that BidController.resolveWinners()
+        // and GET /auctions/{id} return correct data after Redis keys are deleted.
         auction.setStatus("CLOSED");
+        auction.setWinners(winners.isEmpty() ? null : new java.util.LinkedHashMap<>(winners));
         repo.updateUnconditional(auction);
         redis.delete(key);
         redis.delete(winnersKey);
@@ -322,8 +330,17 @@ public class AuctionService {
     private void seedRedisCache(Auction a) {
         String key        = "auction:" + a.getAuctionId();
         String winnersKey = key + ":winners";
-        // Clear any stale winners set (e.g. on cache rebuild after Redis restart)
+
+        // Restore the winners ZSET from the DynamoDB snapshot so that the Lua
+        // script's slot-count and floor-price logic stays correct after a Redis
+        // restart or cache rebuild.  Without this, a multi-winner auction would
+        // believe all seats are empty and accept bids below the real floor.
         redis.delete(winnersKey);
+        if (a.getWinners() != null && !a.getWinners().isEmpty()) {
+            a.getWinners().forEach((bidderId, amount) ->
+                    redis.opsForZSet().add(winnersKey, bidderId, (double) amount));
+        }
+
         redis.opsForHash().putAll(key, Map.of(
                 "auction_id",      a.getAuctionId(),
                 "item_id",         a.getItemId(),
