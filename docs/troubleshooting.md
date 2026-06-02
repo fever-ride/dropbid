@@ -405,3 +405,228 @@ bidStore.findByBidderId(bidderId).stream()
 ```
 
 **Learning**: DynamoDB GSI choice directly affects query cost and latency. The access pattern here is "find bids by a specific bidder within a specific auction" — neither GSI is a perfect fit (both require a post-filter on the other dimension). At scale, the right solution would be a composite sort key like `auctionId#bidderId` to avoid any filtering. For this project, `bidder-index` is the better of the two available options because a single bidder's bid volume across all auctions is bounded, whereas a popular auction's total bid count is not.
+
+---
+
+## 16. Query Service Event Consumer — Write Amplification, Batch Processing, and Idempotency
+
+### Background
+
+The query service consumes `bid_placed` events from a Redis Stream and maintains two PostgreSQL read-model tables: `auction_summary` (one row per auction, tracks `bidCount` and `currentHighest`) and `bid_activity` (one row per (auction, bidder) pair, tracks per-bidder bid history).
+
+The original consumer processed events one message at a time using the `handleMessage` hook in `ResilientStreamConsumer`.
+
+These four related issues were all found during a single design review of the consumer.
+
+---
+
+### Issue 1: Write Amplification — 4N DB Operations per Batch
+
+**Symptom**: For each `bid_placed` event, the consumer issued four separate database round-trips:
+- `findById(auctionId)` → `save(auctionSummary)`
+- `findByAuctionIdAndBidderId` → `save(bidActivity)`
+
+With `batchSize = 20`, a fully-loaded batch produced up to 80 individual DB operations. More critically, `auction_summary` is a hot row — every bid touches the same auction's `bidCount` and `currentHighest`. Processing 20 events one-by-one means acquiring the PostgreSQL row lock 20 times sequentially, serialising what should be a bulk operation.
+
+**Fix**: Added a `handleBatch` extension point to the `ResilientStreamConsumer` base class. The default implementation calls `handleMessage` per record (backward-compatible with all existing consumers). `BidPlacedConsumer` overrides it to process the full batch in a single `@Transactional` call:
+
+1. One `findAllById` pre-loads all `AuctionSummary` rows touched by the batch
+2. An in-batch `Map<String, BidActivity>` cache avoids duplicate DB reads for the same (auction, bidder) pair — cache misses fall back to individual DB reads and store the result (including `null`) to prevent repeated misses for the same key
+3. One `saveAll(dirtySummaries)` and one `saveAll(activities)` at the end — only rows that were actually mutated are included
+
+For a batch of 20 events, DB operations dropped from ≤80 to: 1 bulk read + ≤40 lazy activity reads + 2 bulk writes. The hot row lock is acquired once per batch instead of once per event.
+
+---
+
+### Issue 2: PEL Redelivery Double-Counting
+
+**Symptom**: Not caught in testing — identified by thinking through the at-least-once delivery guarantee of Redis Streams.
+
+**Cause**: If the consumer commits the DB write but crashes before sending the ACK, the message stays in the PEL (Pending Entry List) and is redelivered on the next consumer startup. The original handler had no idempotency check: every delivery unconditionally executed `bidCount + 1` and `bidActivity.bidCount + 1`. A single crash-and-restart cycle could inflate both counters for the same bid.
+
+**Fix**: Added a `lastBidId` field to `AuctionSummary`, written atomically in the same transaction as `bidCount`. Before processing any event:
+
+```java
+if (event.bidId().equals(summary.getLastBidId())) return;
+```
+
+Because `lastBidId` and `bidCount` are committed together, a failed transaction leaves both fields consistent. On redelivery, the guard fires and the event is skipped cleanly.
+
+---
+
+### Issue 3: Batch Optimization Introduces a Partial Idempotency Gap
+
+**Symptom**: Discovered during review of the batch implementation — the `lastBidId` guard was not sufficient for the new batch ACK model.
+
+**Cause**: `lastBidId` only records the *last* processed event per auction in a batch. If a batch contains two events for the same auction — B1 then B2 — the committed state has `lastBidId = B2`. On batch redelivery (DB committed but ACK failed), the guard catches B2 but not B1: `B1 ≠ B2`, so B1 is processed again and `bidCount` is inflated by 1.
+
+This is a regression introduced by the batch optimization. The per-message approach ACKed each message immediately after its own commit, so at most one message could be redelivered after a crash. The batch approach commits N events atomically and ACKs them together — if the ACK fails, all N are redelivered regardless of position in the batch.
+
+**Fix**: Added a `Set<String> processedInBatch` local to each `handleBidPlacedBatch` invocation:
+
+```java
+if (processedInBatch.contains(event.bidId())
+        || (summary != null && event.bidId().equals(summary.getLastBidId()))) {
+    continue;
+}
+// ... after processing:
+processedInBatch.add(event.bidId());
+```
+
+Two layers, two distinct failure modes:
+- `lastBidId` — guards against cross-batch PEL redelivery (the common case)
+- `processedInBatch` — guards against within-batch position gaps on redelivery (the regression introduced by batching)
+
+**Key insight**: an optimisation that changes delivery atomicity boundaries can silently weaken existing correctness guarantees. The `lastBidId` guard was designed for the per-message ACK model; adopting batch ACK without auditing idempotency coverage was the gap. The correct response is to audit every idempotency assumption whenever the delivery or commit unit changes.
+
+---
+
+## 17. Missing Indexes in Query Service Tables
+
+**Symptom**: Identified during table design review — no query plan analysis was needed; the absence of indexes was visible directly from the entity definitions.
+
+**Cause**: `AuctionSummary` and `BidActivity` were defined without any `@Index` annotations. All repository query methods (`findByStatus`, `findBySellerId`, `findByBidderId`, `findByAuctionIdAndBidderId`) were issuing sequential full-table scans.
+
+**Fix**: Added explicit `@Index` annotations to both entities. Compound indexes were chosen to match the actual access patterns — in particular the three sort options on the auction listing endpoint (`bidCount`, `currentHighest`, `updatedAt`) and the seller dashboard's combined `(sellerId, status)` filter:
+
+```java
+@Table(name = "auction_summary", indexes = {
+    @Index(name = "idx_as_status",           columnList = "status"),
+    @Index(name = "idx_as_seller",           columnList = "sellerId"),
+    @Index(name = "idx_as_status_bidcount",  columnList = "status, bidCount"),
+    @Index(name = "idx_as_status_highest",   columnList = "status, currentHighest"),
+    @Index(name = "idx_as_status_updatedat", columnList = "status, updatedAt"),
+    @Index(name = "idx_as_seller_status",    columnList = "sellerId, status")
+})
+```
+
+`BidActivity` received a unique constraint on `(auctionId, bidderId)` — which doubles as the primary lookup index — plus single-column indexes on `bidderId` and `bidderId + bidStatus` for the buyer dashboard.
+
+**Learning**: index design should be driven by access patterns, not added reactively after a slow query appears. For each repository query method there should be a corresponding index that supports it. In a read model like this one, where the whole point is fast reads, missing indexes are a fundamental design gap, not a tuning afterthought.
+
+---
+
+## 18. Query Service Schema Redesign — Replacing `bid_activity` with an Append-Only `bid` Table
+
+### Background
+
+After completing the batch-processing and idempotency work in Story 16, a follow-up design review of the Query Service as a whole exposed a more fundamental problem: the `bid_activity` table — one row per (auction, bidder) pair — was the wrong data model for what the service needed to do.
+
+---
+
+### The Core Problem: Aggregation State That Has to Be Kept Consistent
+
+`bid_activity` stored **derived aggregate state** — `latestAmount`, `bidCount`, `firstBidAt`, `lastBidAt` — that had to be updated on every incoming `bid_placed` event. This required the consumer to:
+
+1. Load the existing row for (auction, bidder)
+2. Merge the new bid into it (max amount, increment count, update timestamps)
+3. Mark the previous bidder as `OUTBID`, which required a second lookup and write
+
+The end result was a consumer with ~120 lines of logic, an in-batch activity cache, dirty-set tracking, and two layers of idempotency protection. All of this complexity existed not to do something useful, but to maintain counts and maximums that could be computed from the raw bid log.
+
+**The fundamental design error**: `bid_activity` was an aggregation layer maintained by the consumer instead of a pure event log. The data it stored (who bid, when, how much) was being mutated rather than appended — losing history in the process. If a buyer places three bids, only the latest `latestAmount` and the incremented `bidCount` are visible; the individual bid amounts are gone.
+
+---
+
+### Diagnosis: Why Was This Design Chosen?
+
+The `bid_activity` design came from treating the read model as a denormalisation of the write side. The original intuition was: "for each bidder on each auction, keep a summary row so queries are fast". This is a reasonable starting point, but it conflated two separate concerns:
+
+1. **What happened** (append-only event log — the source of truth)
+2. **How to answer queries fast** (derived aggregation — can be computed at read time or cached)
+
+By storing the aggregation in the table and keeping it consistent through event processing, the consumer had to solve a consistency problem that the database could solve trivially via `GROUP BY`.
+
+---
+
+### The Redesign
+
+Replaced `auction_summary` + `bid_activity` with three normalised tables:
+
+| Table | Responsibility | Idempotency mechanism |
+|---|---|---|
+| `auction` | Structural fields + stored `bidCount`/`currentHighest` | Upsert by `auctionId` PK |
+| `bid` | Append-only record per accepted bid | `bidId` PK — `existsById` check |
+| `auction_winner` | One row per winner, written at auction close | UNIQUE(`auctionId`, `bidderId`) constraint |
+
+**`bid` is the key change.** Each event appends one row with the full bid data (`bidId`, `bidderId`, `amount`, `bidAt`). No merging. No aggregation. The `bidId` from `BidPlacedEvent` is the natural idempotency key: if the row already exists, the event is a PEL replay — skip it.
+
+The per-bidder aggregates (`latestAmount`, `bidCount`, `firstBidAt`, `lastBidAt`) that `bid_activity` stored are now computed in the database using `GROUP BY`:
+
+```sql
+SELECT bidder_id, MAX(amount) AS latest_amount, COUNT(*) AS bid_count,
+       MIN(bid_at) AS first_bid_at, MAX(bid_at) AS last_bid_at
+  FROM bid
+ WHERE auction_id = :auctionId
+ GROUP BY bidder_id
+```
+
+`bidCount` and `currentHighest` are still stored on the `auction` row as a query-time optimisation — the public listing endpoint sorts by them, and a `GROUP BY` on every page request would be expensive. These values are updated by a single native SQL `UPDATE ... SET bid_count = bid_count + 1, current_highest = GREATEST(current_highest, :amount)` that runs after the bid insert.
+
+---
+
+### `BidPlacedConsumer` Before and After
+
+**Before** (~120 lines, multiple data structures, two idempotency layers):
+```java
+// Batch pre-load, in-batch cache, dirty tracking, previous-bidder OUTBID update,
+// lastBidId + processedInBatch idempotency, saveAll(dirtySummaries), saveAll(activities)
+```
+
+**After** (~40 lines, one idempotency check):
+```java
+@Transactional
+public void handleBidPlaced(BidPlacedEvent event) {
+    if (bidRepo.existsById(event.bidId())) return;   // idempotency
+
+    Bid bid = new Bid(event.bidId(), event.auctionId(), event.userId(),
+                      event.itemId(), event.amount(), Instant.parse(event.bidAcceptedAt()));
+    bidRepo.save(bid);
+
+    int updated = auctionRepo.incrementBidCounters(event.auctionId(), event.amount(), Instant.now());
+    if (updated == 0) {
+        // bid arrived before auction:created — create skeletal auction row
+        auctionRepo.save(skeletalAuction(event));
+    }
+}
+```
+
+The entire batch-processing machinery, the activity cache, the dirty-set, the `lastBidId` cross-batch guard, and the previous-bidder `OUTBID` tracking were all deleted. The previous-bidder status is now computed at query time from `auction_winner` — a bid is `WON` if there's an `auction_winner` row for (auction, bidder), `OUTBID` if the auction is closed and no winner row exists, `ACTIVE` otherwise. No consumer needs to maintain this.
+
+---
+
+### `AuctionClosedConsumer` Simplification
+
+The old consumer did three writes: update `auction_summary` (mark CLOSED), then load all `bid_activity` rows for the auction, then mark each one WON or OUTBID. That was a full table scan and a bulk update whose only purpose was to populate a status that can be derived.
+
+The new consumer does two writes: mark `auction` as CLOSED, then insert one `auction_winner` row per winner. The `OUTBID` state for non-winners is a derived fact, not stored state.
+
+---
+
+### Query-Time Status Derivation in Native SQL
+
+The buyer dashboard and seller bids view use a `BidSummaryProjection` — a Spring Data interface projection backed by a native SQL query that joins `bid`, `auction`, and `auction_winner` in a single round-trip:
+
+```sql
+CASE WHEN aw.bidder_id IS NOT NULL THEN 'WON'
+     WHEN a.status = 'CLOSED'      THEN 'OUTBID'
+     ELSE 'ACTIVE' END AS bidStatus
+```
+
+This computes the status in the database without any consumer needing to maintain it. The buyer's `?status=WON` filter is applied as a `HAVING` clause on the same query — the status filter and pagination both happen in one SQL round-trip with `LIMIT / OFFSET`.
+
+---
+
+### Flyway Migration
+
+`V3__redesign_query_tables.sql` drops `bid_activity` and `auction_summary`, then creates `auction`, `bid`, and `auction_winner` with appropriate indexes. The old entities and repository interfaces were deleted from the codebase.
+
+---
+
+### Key Insights
+
+**Derived state should be computed, not maintained.** Every piece of state that can be expressed as a query over an append-only log is a candidate for deletion from the write path. `latestAmount`, `bidCount`, `bidStatus` — all of these are queries over the raw bid records, not facts that need to be stored separately.
+
+**Idempotency becomes trivial with an append-only model.** The two-layer `lastBidId` + `processedInBatch` mechanism in Story 16 existed because the consumer was updating mutable aggregation state. Once the model is append-only with a natural PK, idempotency is a single `existsById` check. The complexity of the old guard was a symptom of the wrong data model.
+
+**The read model is a view, not a materialised copy of the write side.** Designing the read model as "the write model but denormalised" leads to the same consistency problems as keeping two databases in sync. A better mental model is: the `bid` table is an event log, and the query layer computes any view it needs from that log at read time. Stored aggregations are an optimisation (for sort/pagination), not the foundation.

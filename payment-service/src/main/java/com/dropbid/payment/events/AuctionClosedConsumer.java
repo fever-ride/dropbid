@@ -61,7 +61,7 @@ public class AuctionClosedConsumer extends ResilientStreamConsumer {
 
     @Override
     @PostConstruct
-    protected void init() {
+    public void init() {
         ensureGroup();
         // N worker virtual threads for parallel payment processing
         for (int i = 0; i < numWorkers; i++) {

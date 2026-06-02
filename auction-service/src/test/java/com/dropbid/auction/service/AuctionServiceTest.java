@@ -19,6 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -349,5 +350,267 @@ class AuctionServiceTest {
 
         List<Auction> pending = service.listAuctions("PENDING");
         assertEquals(1, pending.size());
+    }
+
+    // ── createAuction: event publishing ─────────────────────────────────────
+
+    @Test
+    void createAuction_open_publishesAuctionCreatedEvent() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction result = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 2);
+
+        verify(publisher).publishAuctionCreated(argThat(e ->
+                e.auctionId().equals(result.getAuctionId())
+                && "OPEN".equals(e.status())
+                && e.startingBid() == 100
+                && e.quantity() == 2
+        ));
+    }
+
+    @Test
+    void createAuction_pending_publishesAuctionCreatedEventWithPendingStatus() {
+        String start = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        String end   = Instant.now().plus(2, ChronoUnit.HOURS).toString();
+        Auction result = service.createAuction("seller1", "shop1", "item1", 100, null, start, end, 1);
+
+        verify(publisher).publishAuctionCreated(argThat(e ->
+                e.auctionId().equals(result.getAuctionId())
+                && "PENDING".equals(e.status())
+        ));
+    }
+
+    // ── openAuction: event publishing ───────────────────────────────────────
+
+    @Test
+    void openAuction_pendingAuction_publishesAuctionCreatedWithOpenStatus() {
+        String start = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        String end   = Instant.now().plus(2, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, start, end, 1);
+
+        // clear the invocation from createAuction so we can verify openAuction's call separately
+        clearInvocations(publisher);
+
+        service.openAuction(a.getAuctionId());
+
+        verify(publisher).publishAuctionCreated(argThat(e ->
+                e.auctionId().equals(a.getAuctionId())
+                && "OPEN".equals(e.status())
+        ));
+    }
+
+    @Test
+    void openAuction_alreadyOpen_doesNotPublishEvent() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 1);
+        clearInvocations(publisher);
+
+        service.openAuction(a.getAuctionId());
+
+        verify(publisher, never()).publishAuctionCreated(any());
+    }
+
+    // ── closeAuction: winners resolution ────────────────────────────────────
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void closeAuction_multipleWinnersFromZset_allPersistedAndPublished() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 2);
+
+        ZSetOperations.TypedTuple<String> t1 = mock(ZSetOperations.TypedTuple.class);
+        when(t1.getValue()).thenReturn("buyerA");
+        when(t1.getScore()).thenReturn(500.0);
+
+        ZSetOperations.TypedTuple<String> t2 = mock(ZSetOperations.TypedTuple.class);
+        when(t2.getValue()).thenReturn("buyerB");
+        when(t2.getScore()).thenReturn(300.0);
+
+        when(redis.opsForZSet().rangeWithScores(anyString(), anyLong(), anyLong()))
+                .thenReturn(Set.of(t1, t2));
+
+        service.closeAuction(a.getAuctionId());
+
+        assertEquals("CLOSED", a.getStatus());
+        assertNotNull(a.getWinners());
+        assertEquals(2, a.getWinners().size());
+        assertEquals(500L, a.getWinners().get("buyerA"));
+        assertEquals(300L, a.getWinners().get("buyerB"));
+        verify(publisher).publishAuctionClosed(argThat(e ->
+                e.winners() != null && e.winners().size() == 2
+        ));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void closeAuction_zsetEmpty_fallsBackToDynamoWinners() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 1);
+        a.setWinners(Map.of("buyerA", 400L));
+
+        when(redis.opsForZSet().rangeWithScores(anyString(), anyLong(), anyLong()))
+                .thenReturn(Set.of());
+
+        service.closeAuction(a.getAuctionId());
+
+        assertEquals("CLOSED", a.getStatus());
+        assertEquals(400L, a.getWinners().get("buyerA"));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void closeAuction_zsetAndDynamoEmpty_fallsBackToHighestBidder() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 1);
+        a.setHighestBidder("buyerZ");
+        a.setCurrentHighest(700L);
+
+        when(redis.opsForZSet().rangeWithScores(anyString(), anyLong(), anyLong()))
+                .thenReturn(Set.of());
+
+        service.closeAuction(a.getAuctionId());
+
+        assertEquals("CLOSED", a.getStatus());
+        assertEquals(700L, a.getWinners().get("buyerZ"));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void closeAuction_noBidAuction_publishesEventWithNullWinners() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 1);
+
+        when(redis.opsForZSet().rangeWithScores(anyString(), anyLong(), anyLong()))
+                .thenReturn(Set.of());
+
+        service.closeAuction(a.getAuctionId());
+
+        assertEquals("CLOSED", a.getStatus());
+        assertNull(a.getWinners());
+        // event still published — query-service needs it to transition status to CLOSED
+        verify(publisher).publishAuctionClosed(argThat(e ->
+                e.auctionId().equals(a.getAuctionId()) && e.winners() == null
+        ));
+    }
+
+    // ── getAuction ───────────────────────────────────────────────────────────
+
+    @Test
+    void getAuction_existingId_returnsAuction() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction created = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 1);
+
+        Auction found = service.getAuction(created.getAuctionId());
+
+        assertNotNull(found);
+        assertEquals(created.getAuctionId(), found.getAuctionId());
+    }
+
+    @Test
+    void getAuction_unknownId_returnsNull() {
+        assertNull(service.getAuction("does-not-exist"));
+    }
+
+    // ── pollDueAuctionIds ────────────────────────────────────────────────────
+
+    @Test
+    void pollDueAuctionIds_returnsDueIds() {
+        Set<String> expected = Set.of("auction-1", "auction-2");
+        when(redis.opsForZSet().rangeByScore(eq("auction:schedule:close"), eq(0.0), anyDouble()))
+                .thenReturn(expected);
+
+        Set<String> result = service.pollDueAuctionIds("auction:schedule:close");
+
+        assertEquals(expected, result);
+    }
+
+    @Test
+    void pollDueAuctionIds_nullFromRedis_returnsEmptySet() {
+        when(redis.opsForZSet().rangeByScore(anyString(), anyDouble(), anyDouble()))
+                .thenReturn(null);
+
+        Set<String> result = service.pollDueAuctionIds("auction:schedule:close");
+
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+    }
+
+    // ── rebuildSchedules ─────────────────────────────────────────────────────
+
+    @Test
+    void rebuildSchedules_addsSchedulesToSortedSets() {
+        // One PENDING, one OPEN already in store via createAuction
+        String start  = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        String end    = Instant.now().plus(2, ChronoUnit.HOURS).toString();
+        String endNow = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+
+        Auction pending = service.createAuction("s1", "shop1", "item1", 100, null, start, end, 1);
+        Auction open    = service.createAuction("s2", "shop2", "item2", 200, null, null, endNow, 1);
+
+        // Clear invocations recorded during createAuction so we only count rebuildSchedules calls
+        clearInvocations(redis.opsForZSet());
+
+        // Simulate Redis already having the open auction's cache so seedRedisCache is not triggered
+        when(redis.hasKey("auction:" + open.getAuctionId())).thenReturn(true);
+
+        service.rebuildSchedules();
+
+        // PENDING auction → SCHEDULE_OPEN
+        verify(redis.opsForZSet()).add(
+                eq("auction:schedule:open"),
+                eq(pending.getAuctionId()),
+                anyDouble()
+        );
+        // OPEN auction → SCHEDULE_CLOSE
+        verify(redis.opsForZSet()).add(
+                eq("auction:schedule:close"),
+                eq(open.getAuctionId()),
+                anyDouble()
+        );
+    }
+
+    @Test
+    void rebuildSchedules_warmsCacheForOpenAuctionWithMissingKey() {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction open = service.createAuction("s1", "shop1", "item1", 100, null, null, end, 1);
+
+        // Clear invocations recorded during createAuction so we only count rebuildSchedules calls
+        clearInvocations(redis.opsForHash());
+
+        // Simulate the hash key is absent → seedRedisCache should be called
+        when(redis.hasKey("auction:" + open.getAuctionId())).thenReturn(false);
+
+        service.rebuildSchedules();
+
+        // seedRedisCache calls putAll with the auction state
+        verify(redis.opsForHash()).putAll(eq("auction:" + open.getAuctionId()), any());
+    }
+
+    // ── placeBid: async bid history ──────────────────────────────────────────
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void placeBid_success_writesBidHistoryAsynchronously() throws Exception {
+        String end = Instant.now().plus(1, ChronoUnit.HOURS).toString();
+        Auction a = service.createAuction("seller1", "shop1", "item1", 100, null, null, end, 1);
+        String auctionId = a.getAuctionId();
+
+        BidResult result = new BidResult(auctionId, "buyer1", 300, 1L, 1L,
+                null, 0L, 300L, "buyer1", Map.of("buyer1", 300L));
+
+        BidStrategy mockStrategy = mock(BidStrategy.class);
+        when(strategyManager.current()).thenReturn(mockStrategy);
+        doReturn(result).when(mockStrategy).tryPlaceBid(eq(auctionId), eq(300L), eq("buyer1"));
+
+        // Cache hit — skip rebuild
+        when(redis.hasKey("auction:" + auctionId)).thenReturn(true);
+        when(redis.opsForHash().get("auction:" + auctionId, "seller_id")).thenReturn("seller1");
+        when(redis.opsForHash().get("auction:" + auctionId, "item_id")).thenReturn("item1");
+
+        service.placeBid(auctionId, 300, "buyer1");
+
+        // CompletableFuture runs on ForkJoinPool — wait up to 2s for the async write
+        org.awaitility.Awaitility.await()
+                .atMost(2, TimeUnit.SECONDS)
+                .untilAsserted(() -> verify(bidStore).save(any()));
     }
 }

@@ -335,34 +335,24 @@ Auction close publishes the event before updating DynamoDB status. This trades t
 
 ---
 
-## Load Testing
+## Testing
 
-A load test suite validates bid latency, system throughput, resource usage, and data consistency under concurrent load. See [`loadtest/PLAN.md`](loadtest/PLAN.md) for the full test design.
+Full testing strategy, load test scenarios, and priority list: [`docs/testing.md`](docs/testing.md)
+
+### Smoke Test
 
 ```bash
-bash loadtest/run.sh          # run all tests
-bash loadtest/run.sh test2    # run a single test
+bash scripts/smoke-test.sh   # full request flow across all services
 ```
 
-### Test Scenarios
+### Load Test
 
-| Test | What it measures |
-|------|-----------------|
-| Test 1: Single auction, 10→25→50 concurrent bidders | Single-auction throughput under concurrency |
-| Test 2: 20 auctions, 50 concurrent bidders, 30s | Real-world throughput (p50/p95/p99) |
-| Test 3: 10 auctions, bid→close→payment lifecycle | Event pipeline propagation and end-to-end consistency |
+```bash
+bash loadtest/run.sh          # all three tests
+bash loadtest/run.sh test2    # multi-auction throughput only
+```
 
-### What's Verified
-
-**Performance**: Per-request latency percentiles, bid duration (via Micrometer), throughput.
-
-**Resources**: CPU and memory per container sampled every 2s via `docker stats`. Peak values reported per test.
-
-**Consistency** (after each test):
-- Redis `bid_count` and `current_highest` match DynamoDB
-- Redis winners ZSET members match DynamoDB winners map
-- Winners count never exceeds auction `quantity`
-- After auction close: winners are recorded in `Auction.winners`; bid records remain as ACTIVE/OUTBID (no WON status in Bids table), payments are created, Redis keys are cleaned up, stream consumer lag reaches zero
+Three scenarios: single-auction concurrency ramp (Test 1), multi-auction throughput (Test 2), full bid→close→payment lifecycle with consistency verification (Test 3). Results: [`loadtest/RESULTS.md`](loadtest/RESULTS.md).
 
 ---
 

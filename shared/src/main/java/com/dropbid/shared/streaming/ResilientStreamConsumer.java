@@ -47,7 +47,7 @@ public abstract class ResilientStreamConsumer {
     protected boolean mkStream() { return true; }
 
     @PostConstruct
-    protected void init() {
+    public void init() {
         ensureConsumerGroup();
         Thread.ofVirtual().name(consumerName()).start(this::consumeLoop);
         Thread.ofVirtual().name(consumerName() + "-reclaim").start(this::reclaimLoop);
