@@ -13,6 +13,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
@@ -30,12 +32,16 @@ class PaymentServiceTest {
     @Mock PaymentRepository      repo;
     @Mock PaymentGateway         gateway;
     @Mock PaymentEventPublisher  publisher;
+    @Mock StringRedisTemplate    redis;
+    @Mock ValueOperations<String, String> valueOps;
 
     PaymentService service;
 
     @BeforeEach
     void setUp() {
-        service = new PaymentService(repo, gateway, publisher);
+        lenient().when(redis.opsForValue()).thenReturn(valueOps);
+        lenient().when(valueOps.setIfAbsent(any(), any(), any())).thenReturn(true);
+        service = new PaymentService(repo, gateway, publisher, redis);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────

@@ -40,3 +40,8 @@ application-dev.yaml
 *~
 tmp/
 temp/
+
+# Load test runtime artifacts
+loadtest/__pycache__/
+loadtest/fixtures.json
+loadtest/results/

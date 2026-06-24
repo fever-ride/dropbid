@@ -12,6 +12,11 @@ spring:
       host: ${SPRING_REDIS_HOST:localhost}
       port: ${SPRING_REDIS_PORT:6379}
 
+stream:
+  redis:
+    host: ${STREAM_REDIS_HOST:localhost}
+    port: ${STREAM_REDIS_PORT:6380}
+
 jwt:
   secret: ${JWT_SECRET:dev-secret-change-in-production}
 

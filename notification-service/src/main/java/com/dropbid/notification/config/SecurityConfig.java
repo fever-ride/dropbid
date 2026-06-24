@@ -30,7 +30,7 @@ public class SecurityConfig {
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
                 .authorizeHttpRequests(auth -> auth
                         // WebSocket upgrade and SockJS handshake must be permitted
-                        .requestMatchers("/ws/**", "/actuator/**").permitAll()
+                        .requestMatchers("/ws/**", "/actuator/**", "/error").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(new JwtAuthFilter(jwtUtil), UsernamePasswordAuthenticationFilter.class)

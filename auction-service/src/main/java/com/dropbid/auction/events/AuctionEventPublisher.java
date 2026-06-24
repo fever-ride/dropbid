@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.connection.stream.StreamRecords;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -33,7 +34,8 @@ public class AuctionEventPublisher {
     private final StringRedisTemplate redis;
     private final ObjectMapper mapper;
 
-    public AuctionEventPublisher(StringRedisTemplate redis, ObjectMapper mapper) {
+    public AuctionEventPublisher(@Qualifier("streamRedisTemplate") StringRedisTemplate redis,
+                                ObjectMapper mapper) {
         this.redis  = redis;
         this.mapper = mapper;
     }

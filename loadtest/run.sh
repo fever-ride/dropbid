@@ -20,7 +20,7 @@ REDIS_CONTAINER=""
 
 get_redis_container() {
   if [[ -z "$REDIS_CONTAINER" ]]; then
-    REDIS_CONTAINER=$(docker ps -qf name=redis | head -1)
+    REDIS_CONTAINER=$(docker ps -qf name=redis-auction | head -1)
   fi
   echo "$REDIS_CONTAINER"
 }

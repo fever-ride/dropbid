@@ -22,7 +22,6 @@
         <module>user-service</module>
         <module>shop-service</module>
         <module>auction-service</module>
-        <module>bid-service</module>
         <module>notification-service</module>
         <module>payment-service</module>
         <module>query-service</module>

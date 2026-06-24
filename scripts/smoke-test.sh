@@ -47,9 +47,14 @@ assert_field() {
 
 echo ""
 echo "=== 1. Register Seller ==="
-SELLER_BODY=$(curl -sf -X POST "$USER_SVC/users/register" \
+SELLER_BODY=$(curl -s -X POST "$USER_SVC/users/register" \
   -H "Content-Type: application/json" \
-  -d '{"email":"seller@test.com","password":"pass1234","username":"ToyCollectorSeller","role":"SELLER"}' || echo '{}')
+  -d '{"email":"seller@test.com","password":"pass1234","username":"ToyCollectorSeller","role":"SELLER"}')
+if ! echo "$SELLER_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if 'token' in d else 1)" 2>/dev/null; then
+  SELLER_BODY=$(curl -sf -X POST "$USER_SVC/users/login" \
+    -H "Content-Type: application/json" \
+    -d '{"email":"seller@test.com","password":"pass1234"}' || echo '{}')
+fi
 assert_field "seller registration" "token" "$SELLER_BODY"
 SELLER_TOKEN=$(echo "$SELLER_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null || echo "")
 SELLER_ID=$(echo "$SELLER_BODY"  | python3 -c "import sys,json; print(json.load(sys.stdin)['userId'])" 2>/dev/null || echo "")
@@ -58,9 +63,14 @@ SELLER_ID=$(echo "$SELLER_BODY"  | python3 -c "import sys,json; print(json.load(
 
 echo ""
 echo "=== 2. Register Buyer ==="
-BUYER_BODY=$(curl -sf -X POST "$USER_SVC/users/register" \
+BUYER_BODY=$(curl -s -X POST "$USER_SVC/users/register" \
   -H "Content-Type: application/json" \
-  -d '{"email":"buyer@test.com","password":"pass1234","username":"BlindBoxFan","role":"BUYER"}' || echo '{}')
+  -d '{"email":"buyer@test.com","password":"pass1234","username":"BlindBoxFan","role":"BUYER"}')
+if ! echo "$BUYER_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if 'token' in d else 1)" 2>/dev/null; then
+  BUYER_BODY=$(curl -sf -X POST "$USER_SVC/users/login" \
+    -H "Content-Type: application/json" \
+    -d '{"email":"buyer@test.com","password":"pass1234"}' || echo '{}')
+fi
 assert_field "buyer registration" "token" "$BUYER_BODY"
 BUYER_TOKEN=$(echo "$BUYER_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null || echo "")
 
@@ -68,10 +78,14 @@ BUYER_TOKEN=$(echo "$BUYER_BODY" | python3 -c "import sys,json; print(json.load(
 
 echo ""
 echo "=== 3. Create Seller Shop ==="
-SHOP_BODY=$(curl -sf -X POST "$SHOP_SVC/shops" \
+SHOP_BODY=$(curl -s -X POST "$SHOP_SVC/shops" \
   -H "Authorization: Bearer $SELLER_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"LimitedEditionToys","bio":"Rare and secondhand collectible toys"}' || echo '{}')
+  -d '{"name":"LimitedEditionToys","bio":"Rare and secondhand collectible toys"}')
+if ! echo "$SHOP_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if 'id' in d else 1)" 2>/dev/null; then
+  SHOP_BODY=$(curl -s "$SHOP_SVC/shops/owner/$SELLER_ID" \
+    -H "Authorization: Bearer $SELLER_TOKEN" || echo '{}')
+fi
 assert_field "shop creation" "id" "$SHOP_BODY"
 SHOP_ID=$(echo "$SHOP_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
 

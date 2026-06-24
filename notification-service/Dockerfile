@@ -6,7 +6,6 @@ COPY pom.xml .
 COPY shared/pom.xml shared/pom.xml
 COPY notification-service/pom.xml notification-service/pom.xml
 COPY auction-service/pom.xml auction-service/pom.xml
-COPY bid-service/pom.xml bid-service/pom.xml
 COPY payment-service/pom.xml payment-service/pom.xml
 COPY shop-service/pom.xml shop-service/pom.xml
 COPY user-service/pom.xml user-service/pom.xml
