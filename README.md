@@ -143,12 +143,10 @@ PUT /auctions/{id}/bid
         │         ├── ZRANGE winners snapshot (atomic, no gap)
         │         └── return {version, bidCount, prevBidder, prevAmount, newFloor, topBidder, winners...}
         │
-        ├── 4. Async DynamoDB snapshot        fire-and-forget; conditional write (version < :v) discards stale
-        │
-        ├── 5. Write bid history to DynamoDB (synchronous)
+        ├── 4. Write bid history to DynamoDB (synchronous)
         │         recordBidHistory(): mark previous ACTIVE bids OUTBID, save new bid as ACTIVE
         │
-        └── 6. Publish BidPlacedEvent    → bid_placed Redis Stream
+        └── 5. Publish BidPlacedEvent    → bid_placed Redis Stream
 ```
 
 ### Why No Distributed Lock
@@ -327,7 +325,11 @@ The Queue strategy is not suitable for multi-instance deployments because the in
 
 ### DynamoDB Winners Persistence
 
-On every accepted bid, the full winners map (bidderId → amount) is written asynchronously to DynamoDB via `CompletableFuture.runAsync` (fire-and-forget). The write uses a conditional expression (`version < :v`) so out-of-order arrivals are silently discarded. The winners snapshot is captured atomically inside the Lua script, guaranteeing consistency. This async write is cheap insurance — if Redis loses data before auction close, the winners list can be partially recovered from the last successful DynamoDB snapshot.
+Auction state (current highest, bid count, winners map) is flushed to DynamoDB by `AuctionCheckpointer`, a scheduler that runs every 30 seconds (configurable via `auction.checkpoint-interval-ms`) and writes the current Redis state for all OPEN auctions. The write uses a conditional expression (`version < :v`) so stale writes from slower ticks are silently discarded.
+
+This checkpoint is the recovery source for `seedRedisCache()`: if Redis loses data mid-auction, the service rebuilds the hash and winners ZSET from the last snapshot. The accepted data loss window is one checkpoint interval.
+
+Bid history (`Bids` table) is written synchronously inside `placeBid()` and is never lost in normal operation.
 
 ### Event-First Close Ordering
 

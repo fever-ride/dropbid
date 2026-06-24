@@ -19,7 +19,6 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
-import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 
 import com.dropbid.shared.IdGenerator;
 
@@ -29,7 +28,6 @@ import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 
 @Service
 public class AuctionService {
@@ -167,24 +165,6 @@ public class AuctionService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
         }
 
-        // Persist final state back to DynamoDB asynchronously (best-effort)
-        // Redis is the source of truth; closeAuction() writes the authoritative final state.
-        CompletableFuture.runAsync(() -> {
-            try {
-                Auction auctionMeta = repo.findById(auctionId);
-                auctionMeta.setCurrentHighest(result.newFloor());
-                auctionMeta.setHighestBidder(result.topBidder());
-                auctionMeta.setBidCount(result.bidCount());
-                auctionMeta.setVersion(result.newVersion());
-                auctionMeta.setWinners(result.currentWinners().isEmpty() ? null : result.currentWinners());
-                repo.update(auctionMeta);
-            } catch (ConditionalCheckFailedException e) {
-                log.debug("DynamoDB conditional update skipped for auction {} (stale version)", auctionId);
-            } catch (Exception e) {
-                log.warn("async DynamoDB persist failed for auction {}: {}", auctionId, e.getMessage());
-            }
-        });
-
         // Publish event for Notification service (read itemId/sellerId from Redis)
         String itemId = (String) redis.opsForHash().get("auction:" + auctionId, "item_id");
         String bidId = IdGenerator.newId();
@@ -195,16 +175,9 @@ public class AuctionService {
                 bidTime, bidTime
         ));
 
-        // Async bid history recording — append-only insert, no updates ever.
-        // Status (WINNING / OUTBID) is derived at read time from the live winners set,
-        // so no status field needs to be written or updated here.
-        CompletableFuture.runAsync(() -> {
-            try {
-                recordBidHistory(auctionId, bidId, bidderId, amount, bidTime);
-            } catch (Exception e) {
-                log.warn("bid history write failed for auction {}: {}", auctionId, e.getMessage());
-            }
-        });
+        // Bid history is append-only and must not be lost — write synchronously.
+        // Status (WINNING / OUTBID) is derived at read time from the live winners set.
+        recordBidHistory(auctionId, bidId, bidderId, amount, bidTime);
 
         return result;
     }
