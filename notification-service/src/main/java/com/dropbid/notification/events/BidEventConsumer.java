@@ -8,8 +8,12 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+
 @Component
 public class BidEventConsumer extends ResilientStreamConsumer {
+
+    private static final Duration DEDUP_TTL = Duration.ofHours(2);
 
     private final SimpMessagingTemplate stomp;
     private final ObjectMapper mapper;
@@ -32,6 +36,13 @@ public class BidEventConsumer extends ResilientStreamConsumer {
         try {
             String json = (String) record.getValue().get("data");
             BidPlacedEvent event = mapper.readValue(json, BidPlacedEvent.class);
+
+            // Deduplicate redelivered messages using bidId as the idempotency key.
+            // setIfAbsent returns false if the key already exists — this is a replay.
+            String dedupKey = "notif:dedup:" + event.bidId();
+            Boolean isNew = redis.opsForValue().setIfAbsent(dedupKey, "1", DEDUP_TTL);
+            if (!Boolean.TRUE.equals(isNew)) return;
+
             stomp.convertAndSend("/topic/auction/" + event.auctionId(), event);
         } catch (Exception e) {
             throw new RuntimeException(e);

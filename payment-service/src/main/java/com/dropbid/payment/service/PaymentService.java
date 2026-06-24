@@ -9,11 +9,13 @@ import com.dropbid.shared.events.PaymentFailedEvent;
 import com.dropbid.shared.events.PaymentProcessedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,16 +26,21 @@ public class PaymentService {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
 
-    private final PaymentRepository  repo;
-    private final PaymentGateway     gateway;
+    private static final Duration LOCK_TTL = Duration.ofMinutes(5);
+
+    private final PaymentRepository     repo;
+    private final PaymentGateway        gateway;
     private final PaymentEventPublisher publisher;
+    private final StringRedisTemplate   redis;
 
     public PaymentService(PaymentRepository repo,
                           PaymentGateway gateway,
-                          PaymentEventPublisher publisher) {
+                          PaymentEventPublisher publisher,
+                          StringRedisTemplate redis) {
         this.repo      = repo;
         this.gateway   = gateway;
         this.publisher = publisher;
+        this.redis     = redis;
     }
 
     // ── Initiation (called by auction:closed consumer) ────────────────────
@@ -78,10 +85,26 @@ public class PaymentService {
      *   PENDING → PROCESSING (write gate)
      *   PROCESSING → COMPLETED | FAILED
      *
-     * Idempotent: once gateway_decision is set, retries re-use the same result.
+     * A Redis lock on paymentId prevents concurrent redeliveries from calling
+     * the payment gateway twice for the same payment.
      */
     @Transactional
     public void processPayment(String paymentId) {
+        String lockKey = "payment:lock:" + paymentId;
+        Boolean acquired = redis.opsForValue().setIfAbsent(lockKey, "1", LOCK_TTL);
+        if (!Boolean.TRUE.equals(acquired)) {
+            log.info("payment {} is already being processed, skipping duplicate", paymentId);
+            return;
+        }
+
+        try {
+            doProcessPayment(paymentId);
+        } finally {
+            redis.delete(lockKey);
+        }
+    }
+
+    private void doProcessPayment(String paymentId) {
         Payment payment = repo.findById(paymentId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "payment not found"));
 
