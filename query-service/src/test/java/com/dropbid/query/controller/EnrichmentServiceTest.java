@@ -1,5 +1,6 @@
 package com.dropbid.query.controller;
 
+import com.dropbid.query.config.ServiceTokenProvider;
 import com.dropbid.query.dto.BidSummaryProjection;
 import com.dropbid.query.dto.EnrichedAuctionSummary;
 import com.dropbid.query.dto.EnrichedBidActivity;
@@ -40,14 +41,15 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class EnrichmentServiceTest {
 
-    @Mock UserLookupRepository userRepo;
-    @Mock ItemLookupRepository itemRepo;
+    @Mock UserLookupRepository  userRepo;
+    @Mock ItemLookupRepository  itemRepo;
+    @Mock ServiceTokenProvider  serviceToken;
 
     EnrichmentService service;
 
     @BeforeEach
     void setUp() {
-        service = new EnrichmentService(userRepo, itemRepo, new ObjectMapper());
+        service = new EnrichmentService(userRepo, itemRepo, new ObjectMapper(), serviceToken);
     }
 
     // ── factory helpers ───────────────────────────────────────────────────────

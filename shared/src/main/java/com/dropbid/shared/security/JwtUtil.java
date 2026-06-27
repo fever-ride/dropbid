@@ -38,6 +38,17 @@ public class JwtUtil {
                 .compact();
     }
 
+    /** Generate a long-lived service-to-service token (role=SERVICE, 365 days). */
+    public String generateServiceToken(String serviceId) {
+        return Jwts.builder()
+                .subject(serviceId)
+                .claim("role", "SERVICE")
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + 365L * 86_400_000L))
+                .signWith(key)
+                .compact();
+    }
+
     /**
      * Validate the token and return its claims.
      *

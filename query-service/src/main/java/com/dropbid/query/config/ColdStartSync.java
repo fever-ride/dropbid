@@ -34,13 +34,16 @@ public class ColdStartSync {
     private final UserLookupRepository userRepo;
     private final ItemLookupRepository itemRepo;
     private final ObjectMapper mapper;
+    private final ServiceTokenProvider serviceToken;
 
     public ColdStartSync(UserLookupRepository userRepo,
                           ItemLookupRepository itemRepo,
-                          ObjectMapper mapper) {
-        this.userRepo = userRepo;
-        this.itemRepo = itemRepo;
-        this.mapper   = mapper;
+                          ObjectMapper mapper,
+                          ServiceTokenProvider serviceToken) {
+        this.userRepo     = userRepo;
+        this.itemRepo     = itemRepo;
+        this.mapper       = mapper;
+        this.serviceToken = serviceToken;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -58,6 +61,7 @@ public class ColdStartSync {
             HttpResponse<String> resp = client.send(
                     HttpRequest.newBuilder()
                             .uri(URI.create(userServiceUrl + "/internal/users"))
+                            .header("Authorization", serviceToken.bearerHeader())
                             .GET().build(),
                     HttpResponse.BodyHandlers.ofString());
 
@@ -93,6 +97,7 @@ public class ColdStartSync {
             HttpResponse<String> resp = client.send(
                     HttpRequest.newBuilder()
                             .uri(URI.create(shopServiceUrl + "/internal/items"))
+                            .header("Authorization", serviceToken.bearerHeader())
                             .GET().build(),
                     HttpResponse.BodyHandlers.ofString());
 

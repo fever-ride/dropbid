@@ -7,6 +7,9 @@ import com.dropbid.query.repository.BidRepository;
 import com.dropbid.shared.events.BidPlacedEvent;
 import com.dropbid.shared.streaming.ResilientStreamConsumer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -35,6 +38,8 @@ import java.time.Instant;
 @Component
 public class BidPlacedConsumer extends ResilientStreamConsumer {
 
+    private static final Logger log = LoggerFactory.getLogger(BidPlacedConsumer.class);
+
     private final AuctionRepository auctionRepo;
     private final BidRepository     bidRepo;
     private final ObjectMapper      mapper;
@@ -59,6 +64,10 @@ public class BidPlacedConsumer extends ResilientStreamConsumer {
             String json = (String) record.getValue().get("data");
             BidPlacedEvent event = mapper.readValue(json, BidPlacedEvent.class);
             handleBidPlaced(event);
+        } catch (DataIntegrityViolationException e) {
+            // Concurrent redelivery: another worker already inserted this bidId.
+            // Treat as idempotent success — do not rethrow so the message gets ACKed.
+            log.info("duplicate bid record for bidId (concurrent redelivery), skipping");
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

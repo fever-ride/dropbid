@@ -1,5 +1,6 @@
 package com.dropbid.query.controller;
 
+import com.dropbid.query.config.ServiceTokenProvider;
 import com.dropbid.query.dto.BidSummaryProjection;
 import com.dropbid.query.dto.EnrichedAuctionSummary;
 import com.dropbid.query.dto.EnrichedBidActivity;
@@ -40,13 +41,16 @@ public class EnrichmentService {
     private final UserLookupRepository userRepo;
     private final ItemLookupRepository itemRepo;
     private final ObjectMapper         mapper;
+    private final ServiceTokenProvider serviceToken;
 
     public EnrichmentService(UserLookupRepository userRepo,
                               ItemLookupRepository itemRepo,
-                              ObjectMapper mapper) {
-        this.userRepo = userRepo;
-        this.itemRepo = itemRepo;
-        this.mapper   = mapper;
+                              ObjectMapper mapper,
+                              ServiceTokenProvider serviceToken) {
+        this.userRepo     = userRepo;
+        this.itemRepo     = itemRepo;
+        this.mapper       = mapper;
+        this.serviceToken = serviceToken;
     }
 
     // ── Auction enrichment ───────────────────────────────────────────────────
@@ -119,6 +123,7 @@ public class EnrichmentService {
             HttpResponse<String> resp = client.send(
                     HttpRequest.newBuilder()
                             .uri(URI.create(userServiceUrl + "/internal/users/" + userId))
+                            .header("Authorization", serviceToken.bearerHeader())
                             .GET().build(),
                     HttpResponse.BodyHandlers.ofString());
 
@@ -146,6 +151,7 @@ public class EnrichmentService {
             HttpResponse<String> resp = client.send(
                     HttpRequest.newBuilder()
                             .uri(URI.create(shopServiceUrl + "/internal/items/" + itemId))
+                            .header("Authorization", serviceToken.bearerHeader())
                             .GET().build(),
                     HttpResponse.BodyHandlers.ofString());
 
